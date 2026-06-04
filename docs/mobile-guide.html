@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Wheel — User Guide</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f0f1a;
+      color: #e0e0e0;
+      line-height: 1.7;
+    }
+    .container { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
+    h1 { color: #4AE27A; font-size: 2rem; margin-bottom: 8px; }
+    h2 { color: #4AE27A; font-size: 1.4rem; margin: 48px 0 16px; border-bottom: 1px solid #2a2a4e; padding-bottom: 8px; }
+    h3 { color: #4A90E2; font-size: 1.1rem; margin: 28px 0 10px; }
+    p { margin-bottom: 14px; }
+    .subtitle { color: #888; margin-bottom: 40px; font-size: 1.05rem; }
+    .screen {
+      overflow: auto;
+      align-items: flex-start;
+      margin: 24px 0;
+    }
+    .screen img {
+      float: right;
+      margin-left: 24px;
+      width: 220px;
+      min-width: 220px;
+      border-radius: 16px;
+      border: 1px solid #2a2a4e;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+    }
+    .screen-text { overflow: hidden; }
+    .screen-wide { margin: 24px 0; text-align: center; }
+    .screen-wide img {
+      width: 220px;
+      border-radius: 16px;
+      border: 1px solid #2a2a4e;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+    }
+    .screens-row { display: flex; gap: 16px; justify-content: center; margin: 24px 0; flex-wrap: wrap; }
+    .screens-row img {
+      width: 180px;
+      border-radius: 16px;
+      border: 1px solid #2a2a4e;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+    }
+    .note {
+      background: #1a1a3e;
+      border-left: 3px solid #4A90E2;
+      padding: 12px 16px;
+      border-radius: 0 8px 8px 0;
+      margin: 16px 0;
+      font-size: 0.95rem;
+    }
+    .tip {
+      background: #1a2e1a;
+      border-left: 3px solid #4AE27A;
+      padding: 12px 16px;
+      border-radius: 0 8px 8px 0;
+      margin: 16px 0;
+      font-size: 0.95rem;
+    }
+    code {
+      background: #2a2a4e;
+      color: #4AE27A;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.9em;
+    }
+    ul { padding-left: 20px; margin-bottom: 14px; }
+    li { margin-bottom: 6px; }
+    .badge {
+      display: inline-block;
+      background: #2a2a4e;
+      color: #4AE27A;
+      border-radius: 6px;
+      padding: 2px 10px;
+      font-size: 0.85rem;
+      font-weight: bold;
+      margin-right: 6px;
+    }
+    a { color: #7ec8f7; }
+    a:hover { color: #fff; }
+    #lightbox {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      z-index: 1000;
+      cursor: zoom-out;
+      align-items: center;
+      justify-content: center;
+    }
+    #lightbox.active { display: flex; }
+    #lightbox img {
+      max-width: 90vw;
+      max-height: 90vh;
+      border-radius: 12px;
+      box-shadow: 0 8px 48px rgba(0,0,0,0.8);
+    }
+    .lb { cursor: zoom-in; }
+    @media (max-width: 600px) {
+      .screen img { float: none; margin-left: 0; width: 100%; max-width: 300px; min-width: 0; display: block; margin: 0 auto 16px; }
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <p style="margin-bottom:24px"><a href="main-guide.html">← Back to main</a></p>
+
+  <h1>Claude Wheel</h1>
+  <p class="subtitle">Mobile voice interface for Claude Code — user guide</p>
+
+  <!-- ── Table of Contents ── -->
+  <nav style="background:#0d0d2b; border:1px solid #2a2a4e; border-radius:12px; padding:20px 28px; margin-bottom:32px;">
+    <p style="margin:0 0 12px; font-weight:600; color:#a0a0c0; font-size:0.85rem; text-transform:uppercase; letter-spacing:0.08em;">Contents</p>
+    <ol style="margin:0; padding-left:20px; line-height:2;">
+      <li><a href="#first-launch">First launch</a></li>
+      <li><a href="#settings">Settings</a>
+        <ul style="padding-left:18px; line-height:1.8;">
+          <li><a href="#settings-general">General</a></li>
+          <li><a href="#audio-settings">Audio</a></li>
+          <li><a href="#settings-security">Security</a></li>
+          <li><a href="#connection">Connection</a></li>
+          <li><a href="#settings-language">Language</a></li>
+        </ul>
+      </li>
+      <li><a href="#voice">Voice input</a></li>
+      <li><a href="#text-input">Text input</a></li>
+      <li><a href="#terminal">Terminal</a></li>
+      <li><a href="#sessions">Session management</a></li>
+      <li><a href="#encryption">Data encryption</a></li>
+      <li><a href="#build">Building APK</a></li>
+      <li><a href="#tips">Tips</a></li>
+    </ol>
+  </nav>
+
+  <!-- ── First launch ── -->
+  <h2 id="first-launch">First launch</h2>
+  <p>On first launch the app will ask you to set a password. It protects access to the app and encrypts the conversation history and connection data.</p>
+
+  <div class="note">Password must be at least 4 characters. After 5 failed attempts all data will be deleted.</div>
+
+  <p>After setting the password, a PIN entry screen will appear on every launch. Auto-lock after a configured period of inactivity — configurable in the <strong>Security</strong> section.</p>
+
+  <h3 id="main-screen">Main screen</h3>
+
+  <div class="screen reverse">
+    <img src="img/1780480315772.jpg" alt="Main screen">
+    <div class="screen-text">
+      <p>The main screen consists of several zones:</p>
+      <ul>
+        <li><strong>Header</strong> — app name and current session</li>
+        <li><strong>🔊 / 🔇</strong> — quick toggle for response text-to-speech</li>
+        <li><strong>⚙️</strong> — settings button in the top-right corner</li>
+        <li><strong>🟢 / 🔴 indicator</strong> next to the gear — server connection status: 🟢 available, 🔴 unavailable</li>
+        <li><strong>Message feed</strong> — conversation history with Claude, persisted between app restarts</li>
+        <li><strong>▼ Terminal</strong> — expand the Claude session screen panel</li>
+        <li><strong>Input field</strong> — type messages manually + ↑ button to send</li>
+        <li><strong>Tap to speak</strong> — voice input button</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ── Settings (overview) ── -->
+  <h2 id="settings">Settings</h2>
+
+  <div class="screen reverse">
+    <img src="img/1780480315775.jpg" alt="Settings">
+    <div class="screen-text">
+      <p>Settings are opened with the ⚙️ button in the top-right corner. Divided into five sections:</p>
+      <ul>
+        <li><strong>General</strong> — request locking, haptic feedback and hang timeout, font size, terminal height, working directory</li>
+        <li><strong>Audio</strong> — speech recognition (VAD, noise threshold, silence pause), text-to-speech (TTS, voice), haptic on record</li>
+        <li><strong>Security</strong> — auto-lock timer and password change</li>
+        <li><strong>Connection</strong> — server address, API keys</li>
+        <li><strong>Language</strong> — language for speech recognition and response synthesis</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ── Settings General ── -->
+  <h2 id="settings-general">Settings — General</h2>
+  <div class="screen">
+    <div class="screen-text">
+      <h3>Request locking</h3>
+      <p>Enabled by default. In this mode, requests to a single session are processed strictly one at a time — the next request waits until the previous one receives a response.</p>
+      <p><strong>Multi-user mode.</strong> The app allows multiple users to connect to the same Claude session simultaneously — from different phones. The lock prevents conflicts: if one user has already sent a request, the second user's request will be queued and processed after the response is received. Without the lock, both requests would enter the session at the same time, which can lead to unpredictable behavior.</p>
+      <p><strong>Single-user mode.</strong> If you work alone — the lock can be disabled. This lets you send a new request without waiting for a response to the previous one, for example in parallel with working in the terminal on your computer. On login and when switching sessions the app will remind you that the lock is disabled.</p>
+
+      <h3>Haptic on hang</h3>
+      <p>Haptic feedback when a session hangs: Off / Light / Medium / Heavy.</p>
+
+      <h3>Hang timeout (sec)</h3>
+      <p>Time in seconds without changes on the terminal screen, after which the session is considered hung. Default is 20 seconds.</p>
+
+      <h3>Font size</h3>
+      <p>Font size for chat messages and terminal text. Range 8–40, default 15. Useful to increase if the screen is small or you need larger text.</p>
+
+      <h3>Terminal lines</h3>
+      <p>Height of the terminal panel in lines. The actual height is limited by the screen size — the panel will not exceed screen bounds even if you set a large value.</p>
+
+      <h3>Projects directory</h3>
+      <p>Base folder for new sessions on the server, e.g. <code>/home/user/projects</code>. The working directory of a new session must be inside it or in one of its subdirectories. Required for creating new sessions.</p>
+    </div>
+  </div>
+
+  <!-- ── Settings Audio ── -->
+  <h2 id="audio-settings">Settings — Audio</h2>
+  <div class="screen">
+    <img src="img/1780480315781.jpg" alt="Audio settings">
+    <div class="screen-text">
+      <h3>Text-to-speech</h3>
+      <p>Enable or disable reading Claude's responses aloud. Also available as a quick toggle with the 🔊/🔇 button in the main screen header.</p>
+
+      <h3>Voice gender</h3>
+      <p>Choose the voice for reading responses: ♀ female or ♂ male. Applies to all languages.</p>
+
+      <h3>VAD (auto-send)</h3>
+      <p>Automatic voice activity detection mode. The app detects the start of speech and sends the message after a pause — no button press needed.</p>
+
+      <h3>Noise threshold</h3>
+      <p>The sound level bar shows the current microphone level — it is active when the Audio section is open. The white vertical line is the threshold: everything above it is treated as voice and triggers recording in VAD mode.</p>
+      <p>Drag the line with your finger to adjust the threshold. In silence the bar is empty (as in the screenshot). When speaking — the bar fills up: green if below the threshold, red if above.</p>
+      <p>Adjust so that background noise stays to the left of the line, and your voice goes to the right.</p>
+
+      <h3>Silence before send</h3>
+      <p>Silence pause in milliseconds after which VAD sends the recording. Default is 2500 ms (2.5 seconds).</p>
+
+      <h3>Haptic feedback</h3>
+      <p>Haptic feedback at the moment voice recording starts: Off / Light / Medium / Heavy.</p>
+    </div>
+  </div>
+
+  <!-- ── Settings Security ── -->
+  <h2 id="settings-security">Settings — Security</h2>
+  <div class="screen">
+    <img src="img/1780480315778.jpg" alt="Security settings">
+    <div class="screen-text">
+      <h3>Lock after (min)</h3>
+      <p>Inactivity time in minutes after which the app locks and asks for the password. Value <code>0</code> — never lock automatically.</p>
+      <p>Activity is any screen touch, as well as sending and receiving messages — so in VAD mode the timer also resets with each exchange.</p>
+
+      <h3>Change password</h3>
+      <p>Change the password. You will need to enter the current password, then the new one twice. When the password is changed, all data is automatically re-encrypted with the new key.</p>
+    </div>
+  </div>
+
+  <!-- ── Connection settings ── -->
+  <h2 id="connection">Connection settings</h2>
+
+  <div class="screen reverse">
+    <img src="img/1780480315766.jpg" alt="Connection settings">
+    <div class="screen-text">
+      <h3>Connection — server connection</h3>
+      <p>Fill in the fields:</p>
+      <ul>
+        <li><strong>Server URL</strong> — server address (see options below)</li>
+        <li><strong>Server API Key</strong> — secret server key (set during installation)</li>
+        <li><strong>STT API Key</strong> — key for speech recognition (Groq or another provider). Optional if the key is already configured on the server.</li>
+      </ul>
+      <div class="tip">Connection data is stored locally on the phone in encrypted form — the encryption key is derived from your password.</div>
+
+    </div>
+  </div>
+
+  <h3>Server connection options</h3>
+
+  <p><strong>1. Home Wi-Fi</strong><br>
+  Phone and computer on the same network. Find the computer's IP and connect directly via HTTP (limited to network range).</p>
+
+  <p><strong>2. Public IP + domain + trusted certificate</strong><br>
+  If you have a server with a public IP, you will need a domain name and a trusted certificate (if you don't have them yet — you can get them for free via DuckDNS and Let's Encrypt).</p>
+
+  <p><strong>3. Public IP + self-signed certificate</strong><br>
+  Generate a certificate with the required IP in the SAN field, install it on the phone as a trusted CA
+  and connect directly by IP without a domain.</p>
+
+  <p><strong>4. Tailscale + HTTP</strong><br>
+  If you don't have a public IP — install <a href="https://tailscale.com" target="_blank">Tailscale</a>
+  on the server and phone. Traffic goes through an encrypted WireGuard tunnel, so HTTP inside it
+  is secure. No certificates needed.</p>
+
+
+  <p>Detailed connection description in the <a href="server-guide.html#access">server documentation</a>.</p>
+
+  <!-- ── Settings Language ── -->
+  <h2 id="settings-language">Settings — Language</h2>
+  <div>
+      <p>Choose the language for speech recognition and response synthesis. The current language is shown in the section header.</p>
+      <p>Available languages: Chinese, English, French, German, Japanese, Russian, Spanish.</p>
+  </div>
+
+  <!-- ── Voice input ── -->
+  <h2 id="voice">Voice input</h2>
+
+  <h3>Manual mode</h3>
+  <p>By default the app works in manual mode. Full cycle of one request:</p>
+  <div style="display:flex; gap:12px; justify-content:center; margin:24px 0;">
+    <img src="img/1780480315762.jpg" style="width:28%; border-radius:12px; border:1px solid #2a2a4e;" alt="Speaking">
+    <img src="img/1780480315760.jpg" style="width:28%; border-radius:12px; border:1px solid #2a2a4e;" alt="Processing">
+    <img src="img/1780480315758.jpg" style="width:28%; border-radius:12px; border:1px solid #2a2a4e;" alt="Claude responding">
+  </div>
+  <ul>
+    <li>Tap <span class="badge">🎤 Tap to speak</span> — recording will start</li>
+    <li>Speak — the button becomes <span class="badge" style="background:#E24A4a;color:#fff">🔴 Speaking...</span></li>
+    <li>Tap again — the recording is sent, the button dims, speech recognition runs and your message appears in the feed</li>
+    <li>When Claude responds, its message appears and the button turns orange <span class="badge" style="background:#E2A84A;color:#fff">🔊 Speaking...</span> — text-to-speech is playing</li>
+    <li>At any moment the action can be cancelled by tapping <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#8B3A3A;color:#ccc;font-size:13px;font-weight:bold;vertical-align:middle;">✕</span></li>
+    <li>Below Claude's response there is a ⎘ button — copy the text to clipboard</li>
+  </ul>
+
+  <div class="note">During processing or playback the ↑ button in the input field turns into <strong>✕</strong> — tap it to cancel the request.</div>
+
+  <h3>VAD mode — automatic voice activity detection</h3>
+  <p>In Audio settings enable the <strong>VAD (auto-send)</strong> toggle. Now the app detects the start of speech and automatically sends the message after a pause — no button press needed, hands are free.</p>
+  <ul>
+    <li><span class="badge" style="background:#4AE27A;color:#fff">👂 Listening...</span> — the app is waiting for voice</li>
+    <li><span class="badge" style="background:#E24A4a;color:#fff">🔴 Speaking...</span> — voice detected, recording in progress</li>
+    <li>After a silence pause the recording is automatically sent</li>
+  </ul>
+  <div class="tip">In VAD mode the phone will vibrate at the moment recording starts — this is an additional event indicator.</div>
+  <div class="note">For accurate VAD triggering, configure the noise threshold: in <strong>Audio → Noise threshold</strong> drag the white line so that background noise stays to the left and your voice goes to the right. More details — in the <a href="#audio-settings">Audio settings</a> section.</div>
+
+  <!-- ── Text input ── -->
+  <h2 id="text-input">Text input</h2>
+  <p>At the bottom of the screen there is a text input field. Useful when you need to send precise data — code, a link, specific terms — that cannot be said by voice, or when voice control is not possible.</p>
+  <ul>
+    <li>Tap the input field to start typing</li>
+    <li>Tap <strong>↑</strong> to send</li>
+    <li>The field supports multi-line input</li>
+    <li>The "Tap to speak" button hides when the keyboard is open</li>
+    <li>To dismiss the keyboard — tap the message feed</li>
+  </ul>
+
+  <!-- ── Terminal ── -->
+  <h2 id="terminal">Terminal</h2>
+  <p>Sometimes during operation Claude requires confirmation for its actions. In this case execution pauses and the session hangs. The app monitors the Claude session screen state and, if it does not change for longer than the configured interval (<strong>General → Hang timeout</strong>), the Terminal label turns red and the phone may vibrate (configured in <strong>General → Haptic on hang</strong>).</p>
+  <p>Tap <strong>▼ Terminal</strong> to open the panel with the Claude session screen and see what is happening. The terminal loads up to 2000 lines of history and updates every 2 seconds. History can be scrolled with a finger.</p>
+  <p>Panel height and font size are configured in <strong>General → Terminal lines</strong> and <strong>General → Font size</strong>.</p>
+  <p>Available control keys:</p>
+  <ul>
+    <li><strong>Esc</strong> — cancel action</li>
+    <li><strong>↑ / ↓</strong> — navigate menu</li>
+    <li><strong>↵ Enter</strong> — confirm selection</li>
+  </ul>
+
+  <div class="note">When Claude shows a menu with response options — use the arrows to select and Enter to confirm. Esc — to cancel.</div>
+  <div style="display:flex; gap:12px; justify-content:center; margin:24px 0;">
+    <img src="img/1780480315747.jpg" class="lb" style="width:22%; border-radius:12px; border:1px solid #2a2a4e;" alt="Terminal closed">
+    <img src="img/1780480315745.jpg" class="lb" style="width:22%; border-radius:12px; border:1px solid #2a2a4e;" alt="Terminal open">
+    <img src="img/1780480315742.jpg" class="lb" style="width:22%; border-radius:12px; border:1px solid #2a2a4e;" alt="Terminal — hung">
+    <img src="img/1780480315739.jpg" class="lb" style="width:22%; border-radius:12px; border:1px solid #2a2a4e;" alt="Terminal — red">
+  </div>
+  <p>Example: Claude is asking permission to perform an action. Three response options are visible. Select the one you need with the arrows and press Enter.</p>
+
+  <!-- ── Sessions ── -->
+  <h2 id="sessions">Session management</h2>
+  <p>Tap the session name below the app header to open the session list.</p>
+
+  <div class="screen">
+    <img src="img/1780480315752.jpg" alt="Session list">
+    <div class="screen-text">
+      <h3>Session list</h3>
+      <ul>
+        <li>🟢 <strong>running</strong> — session is running in tmux</li>
+        <li>⚪ <strong>stopped</strong> — session is stopped, will start when you switch to it</li>
+        <li><span style="color:#4AE27A">▶</span> before the name — current active session</li>
+      </ul>
+      <p>Tap a session to switch to it. The app remembers the last session and automatically restores it after a restart.</p>
+      <p><span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;border:2px solid #E2A84A;color:#E2A84A;font-size:14px;vertical-align:middle;">⏹</span> next to the active session — end the session: stops tmux and locks the app to the PIN screen.<br>
+      <strong style="color:#4A9EE2">↻</strong> next to the active session — recreate with a fresh context.<br>
+      <strong style="color:#E24A4A">✕</strong> next to an inactive session — remove from the list.</p>
+      <div class="tip">A stopped session will start automatically when you send a message to it.</div>
+    </div>
+  </div>
+
+
+  <div class="note">Removing a session from the list does not delete files in the project directory.</div>
+
+  <h3>Creating a new session</h3>
+  <div class="note">Creating a new session requires the <strong>Projects directory</strong> field to be filled in under Connection settings. The working directory of the new session must be inside Projects directory or one of its subdirectories.</div>
+  <div class="screen">
+    <img src="img/1780480315749.jpg" alt="New session">
+    <div class="screen-text">
+      <p>Expand the <strong>New session</strong> section:</p>
+      <ul>
+        <li>Enter a session name — the path will be filled in automatically based on the <em>Projects directory</em> from settings</li>
+        <li>If needed, edit the path manually</li>
+        <li>Enable <strong>Use template: conversation + lab</strong> to create two sessions at once — <code>name-discussion</code> and <code>name-lab</code> in separate folders with a ready-made <code>CLAUDE.md</code></li>
+        <li>Tap <strong>+ Create</strong></li>
+      </ul>
+      <h3>The discussion + lab template</h3>
+      <p>Splits project work into two specialized sessions:</p>
+      <ul>
+        <li><strong>discussion</strong> — a session for discussing, planning and making decisions. Does not write code.</li>
+        <li><strong>lab</strong> — a working session that implements what was decided in discussion.</li>
+      </ul>
+      <p>Each session gets its own <code>CLAUDE.md</code> with role instructions. Shared project files <code>STATUS.md</code> and <code>CONTEXT.md</code> are created in the root of the project folder and are accessible to both sessions.</p>
+      <p>The split reduces the context load on each session and helps Claude stay in its role — not getting distracted by implementation details during discussion or by philosophy when writing code.</p>
+    </div>
+  </div>
+
+  <!-- ── Data encryption ── -->
+  <h2 id="encryption">Data encryption</h2>
+  <p>All sensitive data is stored locally on the phone in encrypted form. The encryption key is never saved anywhere — it is derived from the password on every login and exists only in memory.</p>
+
+  <h3>What is encrypted</h3>
+  <ul>
+    <li><strong>Connection data</strong> — server address, Server API Key, STT API Key</li>
+    <li><strong>Conversation history</strong> — all messages in the dialogue with Claude</li>
+  </ul>
+
+  <h3>Technical details</h3>
+  <ul>
+    <li>When a password is created, a random <strong>salt</strong> (128 bits) is generated</li>
+    <li>A 256-bit encryption key is derived from the password and salt via <strong>PBKDF2-SHA256</strong> (1000 iterations)</li>
+    <li>A separate <strong>PBKDF2-SHA512</strong> hash (1000 iterations) is used to verify the password on login — the key itself is not stored</li>
+    <li>Data is encrypted with the <strong>AES-256</strong> algorithm</li>
+    <li>When the password is changed, all data is automatically re-encrypted with the new key</li>
+
+  </ul>
+
+  <div class="note">After 5 failed password attempts all encrypted data is deleted from the device. After that you will need to set a new password and reconnect to the server. Deleting data on the device does not affect the integrity of data on the server.</div>
+
+  <!-- ── Building APK ── -->
+  <h2 id="build">Building APK from source</h2>
+  <p>You will need <a href="https://nodejs.org" target="_blank">Node.js</a> and an account on <a href="https://expo.dev" target="_blank">Expo</a>.</p>
+
+  <h3>Install dependencies</h3>
+  <pre>cd claude-wheel-mobile
+npm install</pre>
+
+  <h3>Log in to Expo</h3>
+  <pre>npx eas login</pre>
+
+  <h3>Build APK</h3>
+  <pre>npx eas build -p android --profile preview</pre>
+  <p>The build runs on Expo servers. When complete, a download link for the APK will be sent to your email and appear in your account on expo.dev.</p>
+
+  <div class="note">For development and debugging you can run the app locally via <code>npx expo start</code> and open it in the <a href="https://expo.dev/go" target="_blank">Expo Go</a> app on your phone.</div>
+
+  <!-- ── Tips ── -->
+  <h2 id="tips">Tips</h2>
+  <ul>
+    <li>If the server is temporarily unavailable, the indicator turns red. The app checks the connection on its own and will update the status when the server responds again.</li>
+    <li>To copy Claude's response — tap the ⎘ icon below the message.</li>
+    <li>If the <strong>Terminal</strong> button turned red during processing — the session is not responding. Open the terminal and see what is happening.</li>
+    <li>VAD works well in a quiet environment. In a noisy place it is better to use manual mode.</li>
+    <li>If you started a voice message but changed your mind about sending it — stop the recording and immediately tap <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#8B3A3A;color:#fff;font-size:14px;font-weight:bold;vertical-align:middle">✕</span> to cancel the send.</li>
+    <li>If you don't want to listen to the full response — tap <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#8B3A3A;color:#fff;font-size:14px;font-weight:bold;vertical-align:middle">✕</span> to stop playback.</li>
+    <li>If you want to delete all app data from the phone, enter the wrong PIN 5 times in a row.</li>
+  </ul>
+
+  <p style="margin-top:48px"><a href="main-guide.html">← Back to main</a></p>
+
+</div>
+
+<div id="lightbox" onclick="this.classList.remove('active')">
+  <img id="lightbox-img" src="" alt="">
+</div>
+<script>
+  document.querySelectorAll('.lb').forEach(img => {
+    img.addEventListener('click', function(e) {
+      e.preventDefault();
+      document.getElementById('lightbox-img').src = this.src;
+      document.getElementById('lightbox').classList.add('active');
+    });
+  });
+</script>
+</body>
+</html>
