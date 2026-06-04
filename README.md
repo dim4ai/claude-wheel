@@ -24,9 +24,9 @@ Mobile voice interface for Claude Code — control Claude and manage your projec
 
 Deploy a small server on the machine running Claude Code and install the app on your phone or tablet.
 
-- [Documentation](docs/main-guide.html)
+- [Documentation](https://dim4ai.github.io/claude-wheel/main-guide.html)
 - [APK for Android](https://github.com/dim4ai/claude-wheel/releases)
-- [Build from source](docs/mobile-guide.html#build)
+- [Build from source](https://dim4ai.github.io/claude-wheel/mobile-guide.html#build)
 
 ---
 
