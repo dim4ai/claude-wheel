@@ -576,6 +576,11 @@ export default function VoiceScreen() {
       const data = await r.json();
       if (data.sessions) setSessionsList(data.sessions);
     } catch {}
+    try {
+      const r = await fetch(`${serverUrl}/shell-sessions`, { headers: apiHeaders() });
+      const data = await r.json();
+      if (data.sessions) setShellSessionsList(data.sessions.map((name: string) => ({ name, running: true })));
+    } catch {}
   }
 
   async function switchSession(name: string) {
@@ -1508,6 +1513,7 @@ export default function VoiceScreen() {
                   });
                   setNewShellSessionName('');
                   setNewShellSessionExpanded(false);
+                  await loadSessions();
                 } finally {
                   setCreatingShellSession(false);
                 }
