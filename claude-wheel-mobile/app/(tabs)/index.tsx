@@ -249,8 +249,12 @@ export default function VoiceScreen() {
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const pagerRef = useRef<ScrollView>(null);
   const shellTerminalRefs = useRef<{[name: string]: ScrollView | null}>({});
+  const shellKeysScrollRefs = useRef<{[name: string]: ScrollView | null}>({});
+  const shellKeysScrolledRef = useRef<{[name: string]: boolean}>({});
   const shellKeyboardRefs = useRef<{[name: string]: TextInput | null}>({});
   const shellPrevInputRef = useRef<{[name: string]: string}>({});
+  const [shellModifiers, setShellModifiers] = useState<{[name: string]: {ctrl: boolean, alt: boolean, shift: boolean}}>({});
+  const shellModConsumedRef = useRef<{[name: string]: boolean}>({});
   const currentPageIndexRef = useRef(0);
   const openShellSessionsRef = useRef<string[]>([]);
   const [creatingSession, setCreatingSession] = useState(false);
@@ -765,8 +769,13 @@ export default function VoiceScreen() {
   }
 
   async function onShellInputChange(name: string, newText: string) {
-    // Send only added characters, then reset field to empty.
-    // Backspace is handled separately via onKeyPress.
+    // If modifier key consumed this keystroke via onKeyPress, skip.
+    if (shellModConsumedRef.current[name]) {
+      shellModConsumedRef.current[name] = false;
+      shellPrevInputRef.current[name] = '';
+      setShellInputs(p => ({ ...p, [name]: '' }));
+      return;
+    }
     if (newText.length > 0) {
       await sendShellInput(name, newText, undefined, true);
     }
@@ -1807,26 +1816,43 @@ export default function VoiceScreen() {
             </ScrollView>
 
             {/* Special keys row */}
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0 }} contentContainerStyle={styles.terminalKeys}>
-              {(['↑', '↓', 'Ctrl+C', '|', '~', '/', '↵', 'Tab'] as const).map(label => (
-                <TouchableOpacity key={label} style={[styles.keyBtn, { paddingHorizontal: 14 }]} onPress={() => {
-                  const key = label === 'Tab' ? 'Tab'
-                            : label === '↑' ? 'Up'
-                            : label === '↓' ? 'Down'
-                            : label === 'Ctrl+C' ? 'C-c'
-                            : label === '↵' ? 'Enter'
-                            : label;
-                  if (key === 'Enter') {
-                    sendShellInput(name, '', 'Enter');
-                    setShellInputs(prev => ({ ...prev, [name]: '' }));
-                    shellPrevInputRef.current[name] = '';
-                  } else {
-                    sendShellInput(name, '', key);
-                  }
-                }}>
-                  <Text style={[styles.keyText, { fontSize: 14 }]}>{label}</Text>
-                </TouchableOpacity>
-              ))}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              style={{ flexGrow: 0 }}
+              contentContainerStyle={styles.terminalKeys}
+              ref={r => {
+                shellKeysScrollRefs.current[name] = r;
+                if (r && !shellKeysScrolledRef.current[name]) {
+                  shellKeysScrolledRef.current[name] = true;
+                  setTimeout(() => r.scrollToEnd({ animated: false }), 0);
+                }
+              }}
+            >
+              {(['Alt', 'Ctrl', 'Shift', '↑', '↓', '↵', 'Tab'] as const).map(label => {
+                const mods = shellModifiers[name] ?? { ctrl: false, alt: false, shift: false };
+                const isModifier = label === 'Ctrl' || label === 'Alt' || label === 'Shift';
+                const isActive = (label === 'Ctrl' && mods.ctrl) || (label === 'Alt' && mods.alt) || (label === 'Shift' && mods.shift);
+                return (
+                  <TouchableOpacity key={label} style={[styles.keyBtn, { paddingHorizontal: 14 }, isActive && { backgroundColor: '#4A90E2' }]} onPress={() => {
+                    if (isModifier) {
+                      const mod = label.toLowerCase() as 'ctrl' | 'alt' | 'shift';
+                      setShellModifiers(prev => {
+                        const cur = prev[name] ?? { ctrl: false, alt: false, shift: false };
+                        return { ...prev, [name]: { ...cur, [mod]: !cur[mod] } };
+                      });
+                      shellKeyboardRefs.current[name]?.focus();
+                    } else if (label === '↵') {
+                      sendShellInput(name, '', 'Enter');
+                    } else {
+                      sendShellInput(name, '', label === '↑' ? 'Up' : label === '↓' ? 'Down' : 'Tab');
+                    }
+                  }}>
+                    <Text style={[styles.keyText, { fontSize: 14 }]}>{label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
 
             {/* Invisible TextInput + keyboard toggle */}
@@ -1836,8 +1862,28 @@ export default function VoiceScreen() {
               value={shellInputs[name] ?? ''}
               onChangeText={text => onShellInputChange(name, text)}
               onKeyPress={({ nativeEvent }) => {
-                if (nativeEvent.key === 'Backspace') {
+                const key = nativeEvent.key;
+                const mods = shellModifiers[name] ?? { ctrl: false, alt: false, shift: false };
+                if (key === 'Backspace') {
                   sendShellInput(name, '\x7f', undefined, true);
+                  return;
+                }
+                if (mods.ctrl || mods.alt || mods.shift) {
+                  shellModConsumedRef.current[name] = true;
+                  if (mods.ctrl) {
+                    sendShellInput(name, '', `C-${key.toLowerCase()}`);
+                  } else if (mods.alt) {
+                    sendShellInput(name, '', `M-${key.toLowerCase()}`);
+                  } else if (mods.shift) {
+                    const shiftMap: {[k: string]: string} = {
+                      '1':'!','2':'@','3':'#','4':'$','5':'%',
+                      '6':'^','7':'&','8':'*','9':'(','0':')',
+                      '-':'_','=':'+','[':'{',']':'}','\\':'|',
+                      ';':':','\'':'"',',':'<','.':'>','/':'?','`':'~',
+                    };
+                    sendShellInput(name, shiftMap[key] ?? key.toUpperCase(), undefined, true);
+                  }
+                  setShellModifiers(prev => ({ ...prev, [name]: { ctrl: false, alt: false, shift: false } }));
                 }
               }}
               autoCapitalize="none"
@@ -1935,7 +1981,7 @@ const styles = StyleSheet.create({
   terminalBlock:      { marginHorizontal: 12, marginBottom: 8, backgroundColor: '#0d0d1a', borderRadius: 8 },
   terminalScroll:     { padding: 8 },
   terminalText:       { color: '#4AE27A', fontSize: 11, fontFamily: 'monospace' },
-  terminalKeys:       { flexDirection: 'row', justifyContent: 'center', gap: 16, paddingHorizontal: 8 },
+  terminalKeys:       { flexDirection: 'row', gap: 16, paddingHorizontal: 8 },
   keyBtn:             { backgroundColor: '#2a2a4e', paddingHorizontal: 24, paddingVertical: 4, borderRadius: 8 },
   keyText:            { color: '#fff', fontSize: 20 },
   shellPageHeader:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#2a2a4e' },
