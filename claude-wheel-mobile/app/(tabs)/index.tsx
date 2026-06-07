@@ -248,6 +248,9 @@ export default function VoiceScreen() {
   const [shellInputs, setShellInputs] = useState<{[name: string]: string}>({});
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const pagerRef = useRef<ScrollView>(null);
+  const shellTerminalRefs = useRef<{[name: string]: ScrollView | null}>({});
+  const currentPageIndexRef = useRef(0);
+  const openShellSessionsRef = useRef<string[]>([]);
   const [creatingSession, setCreatingSession] = useState(false);
   const [sessionsList, setSessionsList]     = useState<{name: string; dir: string; running: boolean}[]>([]);
   const [newSessionName, setNewSessionName] = useState('');
@@ -277,8 +280,12 @@ export default function VoiceScreen() {
   const silenceDurationRef = useRef(SILENCE_DURATION);
 
   useEffect(() => {
-    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
-    const hide  = Keyboard.addListener('keyboardDidHide',  () => setKeyboardVisible(false));
+    const show = Keyboard.addListener('keyboardDidShow', () => {
+      setKeyboardVisible(true);
+      const shellName = openShellSessionsRef.current[currentPageIndexRef.current - 1];
+      if (shellName) setTimeout(() => shellTerminalRefs.current[shellName]?.scrollToEnd({ animated: true }), 300);
+    });
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
     return () => { show.remove(); hide.remove(); };
   }, []);
 
@@ -502,6 +509,7 @@ export default function VoiceScreen() {
   }, [pinMode]);
 
   useEffect(() => {
+    openShellSessionsRef.current = openShellSessions;
     if (settingsReady && openShellSessions.length >= 0) {
       AsyncStorage.setItem(STORAGE_KEYS.openShellSessions, encrypt(JSON.stringify(openShellSessions))).catch(() => {});
     }
@@ -1619,6 +1627,7 @@ export default function VoiceScreen() {
         contentContainerStyle={{ height: '100%' }}
         onMomentumScrollEnd={e => {
           const idx = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
+          currentPageIndexRef.current = idx;
           setCurrentPageIndex(idx);
         }}
       >
@@ -1755,7 +1764,12 @@ export default function VoiceScreen() {
             </View>
 
             {/* Terminal output */}
-            <ScrollView style={styles.shellTerminal} contentContainerStyle={{ padding: 8 }}>
+            <ScrollView
+              ref={r => { shellTerminalRefs.current[name] = r; }}
+              style={styles.shellTerminal}
+              contentContainerStyle={{ padding: 8 }}
+              onContentSizeChange={() => shellTerminalRefs.current[name]?.scrollToEnd({ animated: false })}
+            >
               <Text style={[styles.terminalText, { fontSize }]}>{shellScreens[name] ?? ''}</Text>
             </ScrollView>
 
