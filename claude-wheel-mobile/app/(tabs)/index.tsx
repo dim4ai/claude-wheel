@@ -1775,7 +1775,7 @@ export default function VoiceScreen() {
 
             {/* Special keys row */}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={styles.terminalKeys}>
-              {(['Tab', '↑', '↓', 'Ctrl+C', '|', '~', '/'] as const).map(label => (
+              {(['↑', '↓', 'Ctrl+C', '|', '~', '/', 'Tab'] as const).map(label => (
                 <TouchableOpacity key={label} style={[styles.keyBtn, { paddingHorizontal: 14 }]} onPress={() => {
                   const key = label === 'Tab' ? 'Tab'
                             : label === '↑' ? 'Up'
