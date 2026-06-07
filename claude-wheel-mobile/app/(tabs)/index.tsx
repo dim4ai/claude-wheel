@@ -59,6 +59,7 @@ const STORAGE_KEYS = {
   lockTimeout:     'setting_lock_timeout',
   fontSize:        'setting_font_size',
   terminalLines:   'setting_terminal_lines',
+  openShellSessions: 'setting_open_shell_sessions',
 };
 
 
@@ -479,10 +480,32 @@ export default function VoiceScreen() {
       if (hangTimeoutVal !== null)  setHangTimeout(parseInt(hangTimeoutVal) || 20);
       if (fontSizeVal !== null)     { const v = parseInt(fontSizeVal) || 15; setFontSize(v); setFontSizeText(String(v)); }
       if (terminalLinesVal !== null) { const v = parseInt(terminalLinesVal) || 10; setTerminalLines(v); setTerminalLinesText(String(v)); }
+
+      // Restore open shell sessions, verify they still exist
+      const savedShell = await AsyncStorage.getItem(STORAGE_KEYS.openShellSessions);
+      if (savedShell && url) {
+        try {
+          const saved: string[] = JSON.parse(decrypt(savedShell));
+          const r = await fetch(`${decrypt(url)}/shell-sessions`, {
+            headers: { 'x-api-key': apiKey ? decrypt(apiKey) : '' },
+          });
+          const data = await r.json();
+          const existing: string[] = data.sessions ?? [];
+          const valid = saved.filter(n => existing.includes(n));
+          if (valid.length > 0) setOpenShellSessions(valid);
+        } catch {}
+      }
+
       setSettingsReady(true);
     }
     loadSettings();
   }, [pinMode]);
+
+  useEffect(() => {
+    if (settingsReady && openShellSessions.length >= 0) {
+      AsyncStorage.setItem(STORAGE_KEYS.openShellSessions, encrypt(JSON.stringify(openShellSessions))).catch(() => {});
+    }
+  }, [openShellSessions, settingsReady]);
 
   useEffect(() => {
     if (settingsReady && pinMode === 'unlocked' && !sessionLocking) {
@@ -720,6 +743,13 @@ export default function VoiceScreen() {
         const r = await fetch(`${serverUrl}/shell-screen?session=${encodeURIComponent(shellName)}&count=80`, {
           headers: apiHeaders(),
         });
+        if (!r.ok) {
+          // Session no longer exists — close it and return to Claude
+          setOpenShellSessions(prev => prev.filter(n => n !== shellName));
+          pagerRef.current?.scrollTo({ x: 0, animated: true });
+          setCurrentPageIndex(0);
+          return;
+        }
         const data = await r.json();
         setShellScreens(prev => ({ ...prev, [shellName]: data.screen ?? '' }));
       } catch {}
