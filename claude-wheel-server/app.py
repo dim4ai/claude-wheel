@@ -17,7 +17,7 @@ import time
 
 import edge_tts
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Query, Request, UploadFile, HTTPException, Header, Depends
+from fastapi import FastAPI, File, Query, Request, UploadFile, HTTPException, Header, Depends, Body
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from groq import Groq
@@ -483,6 +483,61 @@ def keypress(key: str = Query(...), session: str = Query(...), _=Depends(verify_
         with open(session_log(session), "a") as f:
             f.write("Request cancelled by user.\nENDENDENDENDEND\n")
     return {"ok": True, "key": key}
+
+
+# ── Shell session endpoints ──────────────────────────────────────────────────
+
+@app.get("/shell-sessions")
+def shell_sessions(_=Depends(verify_key)):
+    """Return list of all tmux sessions."""
+    result = subprocess.run(
+        ["tmux", "list-sessions", "-F", "#{session_name}"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return {"sessions": []}
+    names = [s for s in result.stdout.strip().splitlines() if s]
+    return {"sessions": names}
+
+
+@app.get("/shell-screen")
+def shell_screen(session: str = Query(...), start: int = Query(0), count: int = Query(80), _=Depends(verify_key)):
+    """Return terminal output for any tmux session."""
+    cmd = ["tmux", "capture-pane", "-t", session, "-p", "-S", str(-(start + count))]
+    if start > 0:
+        cmd += ["-E", str(-start)]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise HTTPException(status_code=404, detail=f"Session '{session}' not found")
+    return {"screen": result.stdout, "start": start, "count": count}
+
+
+@app.post("/shell-input")
+def shell_input(session: str = Query(...), body: dict = Body(...), _=Depends(verify_key)):
+    """Send text input to a tmux session."""
+    text = body.get("text", "")
+    result = subprocess.run(
+        ["tmux", "send-keys", "-t", session, text, "Enter"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise HTTPException(status_code=404, detail=f"Session '{session}' not found")
+    return {"ok": True}
+
+
+@app.post("/shell-create")
+def shell_create(body: dict = Body(...), _=Depends(verify_key)):
+    """Create a new tmux session."""
+    name = body.get("name", "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name required")
+    result = subprocess.run(
+        ["tmux", "new-session", "-d", "-s", name],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise HTTPException(status_code=400, detail=f"Failed to create session: {result.stderr.strip()}")
+    return {"ok": True, "name": name}
 
 
 # ── Auto-close idle sessions ────────────────────────────────────────────────

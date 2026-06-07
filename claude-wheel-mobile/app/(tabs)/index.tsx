@@ -239,6 +239,9 @@ export default function VoiceScreen() {
   const [newSessionExpanded, setNewSessionExpanded] = useState(false);
   const [shellSessionsExpanded, setShellSessionsExpanded] = useState(false);
   const [shellSessionsList, setShellSessionsList] = useState<{name: string; running: boolean}[]>([]);
+  const [newShellSessionExpanded, setNewShellSessionExpanded] = useState(false);
+  const [newShellSessionName, setNewShellSessionName] = useState('');
+  const [creatingShellSession, setCreatingShellSession] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
   const [sessionsList, setSessionsList]     = useState<{name: string; dir: string; running: boolean}[]>([]);
   const [newSessionName, setNewSessionName] = useState('');
@@ -1429,24 +1432,8 @@ export default function VoiceScreen() {
               </View>
             ))}
 
-            <TouchableOpacity style={styles.sectionHeader} onPress={() => setShellSessionsExpanded(v => !v)}>
-              <Text style={styles.sectionHeaderText}>Shell sessions {shellSessionsExpanded ? '▲' : '▼'}</Text>
-            </TouchableOpacity>
-            {shellSessionsExpanded && (
-              shellSessionsList.length === 0
-                ? <Text style={[styles.sessionDir, { paddingHorizontal: 16, paddingVertical: 8 }]}>No shell sessions</Text>
-                : shellSessionsList.map(s => (
-                  <View key={s.name} style={styles.sessionRow}>
-                    <TouchableOpacity style={{ flex: 1 }}>
-                      <Text style={styles.sessionName}>   {s.name}</Text>
-                      <Text style={styles.sessionDir}>{s.running ? '🟢 running' : '⚪ stopped'}</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))
-            )}
-
             <TouchableOpacity style={styles.sectionHeader} onPress={() => setNewSessionExpanded(v => !v)}>
-              <Text style={styles.sectionHeaderText}>New session {newSessionExpanded ? '▲' : '▼'}</Text>
+              <Text style={styles.sectionHeaderText}>New Claude session {newSessionExpanded ? '▲' : '▼'}</Text>
             </TouchableOpacity>
             {newSessionExpanded && <>
               <TextInput
@@ -1475,6 +1462,57 @@ export default function VoiceScreen() {
               {sessionError ? <Text style={styles.pinError}>{sessionError}</Text> : null}
               <TouchableOpacity style={styles.modalClose} onPress={createSession} disabled={creatingSession}>
                 {creatingSession
+                  ? <ActivityIndicator color="#fff" />
+                  : <Text style={styles.modalCloseText}>+ Create</Text>
+                }
+              </TouchableOpacity>
+            </>}
+
+            <TouchableOpacity style={styles.sectionHeader} onPress={() => setShellSessionsExpanded(v => !v)}>
+              <Text style={styles.sectionHeaderText}>Shell sessions {shellSessionsExpanded ? '▲' : '▼'}</Text>
+            </TouchableOpacity>
+            {shellSessionsExpanded && (
+              shellSessionsList.length === 0
+                ? <Text style={[styles.sessionDir, { paddingHorizontal: 16, paddingVertical: 8 }]}>No shell sessions</Text>
+                : shellSessionsList.map(s => (
+                  <View key={s.name} style={styles.sessionRow}>
+                    <TouchableOpacity style={{ flex: 1 }}>
+                      <Text style={styles.sessionName}>   {s.name}</Text>
+                      <Text style={styles.sessionDir}>{s.running ? '🟢 running' : '⚪ stopped'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))
+            )}
+
+            <TouchableOpacity style={styles.sectionHeader} onPress={() => setNewShellSessionExpanded(v => !v)}>
+              <Text style={styles.sectionHeaderText}>New Shell session {newShellSessionExpanded ? '▲' : '▼'}</Text>
+            </TouchableOpacity>
+            {newShellSessionExpanded && <>
+              <TextInput
+                style={styles.input}
+                value={newShellSessionName}
+                onChangeText={setNewShellSessionName}
+                placeholder="Session name"
+                placeholderTextColor="#555"
+                autoCapitalize="none"
+              />
+              <TouchableOpacity style={styles.modalClose} onPress={async () => {
+                const name = newShellSessionName.trim();
+                if (!name) return;
+                setCreatingShellSession(true);
+                try {
+                  await fetch(`${serverUrl}/shell-create`, {
+                    method: 'POST',
+                    headers: apiHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify({ name }),
+                  });
+                  setNewShellSessionName('');
+                  setNewShellSessionExpanded(false);
+                } finally {
+                  setCreatingShellSession(false);
+                }
+              }} disabled={creatingShellSession}>
+                {creatingShellSession
                   ? <ActivityIndicator color="#fff" />
                   : <Text style={styles.modalCloseText}>+ Create</Text>
                 }
