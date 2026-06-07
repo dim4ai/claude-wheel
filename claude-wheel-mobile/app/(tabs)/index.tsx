@@ -676,6 +676,27 @@ export default function VoiceScreen() {
     );
   }
 
+  function killShellSession(name: string) {
+    Alert.alert(
+      'Kill shell session',
+      `Kill "${name}"? The tmux session will be terminated.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Kill', style: 'destructive', onPress: async () => {
+          try {
+            await fetch(`${serverUrl}/shell-session?session=${encodeURIComponent(name)}`, {
+              method: 'DELETE', headers: apiHeaders(),
+            });
+          } catch {}
+          setOpenShellSessions(prev => prev.filter(n => n !== name));
+          setShellSessionsList(prev => prev.filter(s => s.name !== name));
+          pagerRef.current?.scrollTo({ x: 0, animated: true });
+          setCurrentPageIndex(0);
+        }},
+      ]
+    );
+  }
+
   function recreateSession(name: string) {
     Alert.alert(
       'Clear context?',
@@ -744,23 +765,13 @@ export default function VoiceScreen() {
   }
 
   async function onShellInputChange(name: string, newText: string) {
-    const prev = shellPrevInputRef.current[name] ?? '';
-    shellPrevInputRef.current[name] = newText;
-    setShellInputs(p => ({ ...p, [name]: newText }));
-
-    if (newText.length > prev.length && newText.startsWith(prev)) {
-      // Added characters at end
-      await sendShellInput(name, newText.slice(prev.length), undefined, true);
-    } else if (newText.length < prev.length && prev.startsWith(newText)) {
-      // Deleted characters from end — send backspaces
-      const count = prev.length - newText.length;
-      await sendShellInput(name, '\x7f'.repeat(count), undefined, true);
-    } else {
-      // Autocorrect or paste — clear and retype
-      const backspaces = '\x7f'.repeat(prev.length);
-      if (backspaces) await sendShellInput(name, backspaces, undefined, true);
-      if (newText) await sendShellInput(name, newText, undefined, true);
+    // Send only added characters, then reset field to empty.
+    // Backspace is handled separately via onKeyPress.
+    if (newText.length > 0) {
+      await sendShellInput(name, newText, undefined, true);
     }
+    shellPrevInputRef.current[name] = '';
+    setShellInputs(p => ({ ...p, [name]: '' }));
   }
 
   // Poll shell screen for the current shell page
@@ -781,7 +792,7 @@ export default function VoiceScreen() {
           return;
         }
         const data = await r.json();
-        setShellScreens(prev => ({ ...prev, [shellName]: data.screen ?? '' }));
+        setShellScreens(prev => ({ ...prev, [shellName]: (data.screen ?? '').trimEnd() }));
       } catch {}
     }
     pollShellScreen();
@@ -1590,6 +1601,9 @@ export default function VoiceScreen() {
                       <Text style={styles.sessionName}>   {s.name}</Text>
                       <Text style={styles.sessionDir}>{s.running ? '🟢 running' : '⚪ stopped'}</Text>
                     </TouchableOpacity>
+                    <TouchableOpacity onPress={() => killShellSession(s.name)} style={styles.sessionCloseBtn}>
+                      <Text style={styles.sessionCloseText}>✕</Text>
+                    </TouchableOpacity>
                   </View>
                 ))
             )}
@@ -1614,7 +1628,7 @@ export default function VoiceScreen() {
                   await fetch(`${serverUrl}/shell-create`, {
                     method: 'POST',
                     headers: apiHeaders({ 'Content-Type': 'application/json' }),
-                    body: JSON.stringify({ name }),
+                    body: JSON.stringify({ name, dir: projectsDir }),
                   });
                   setNewShellSessionName('');
                   setNewShellSessionExpanded(false);
@@ -1774,10 +1788,7 @@ export default function VoiceScreen() {
             <View style={styles.shellPageHeader}>
               <Text style={styles.shellPageTitle}>{name}</Text>
               <TouchableOpacity onPress={() => {
-                setOpenShellSessions(prev => {
-                  const next = prev.filter(n => n !== name);
-                  return next;
-                });
+                setOpenShellSessions(prev => prev.filter(n => n !== name));
                 pagerRef.current?.scrollTo({ x: 0, animated: true });
                 setCurrentPageIndex(0);
               }}>
@@ -1789,14 +1800,14 @@ export default function VoiceScreen() {
             <ScrollView
               ref={r => { shellTerminalRefs.current[name] = r; }}
               style={[styles.shellTerminal, { flex: 1 }]}
-              contentContainerStyle={{ padding: 8 }}
+              contentContainerStyle={{ padding: 8, paddingBottom: fontSize * 1.5 }}
               onContentSizeChange={() => shellTerminalRefs.current[name]?.scrollToEnd({ animated: false })}
             >
-              <Text style={[styles.terminalText, { fontSize }]}>{shellScreens[name] ?? ''}</Text>
+              <Text selectable style={[styles.terminalText, { fontSize }]}>{shellScreens[name] ?? ''}</Text>
             </ScrollView>
 
             {/* Special keys row */}
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={styles.terminalKeys}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0 }} contentContainerStyle={styles.terminalKeys}>
               {(['↑', '↓', 'Ctrl+C', '|', '~', '/', '↵', 'Tab'] as const).map(label => (
                 <TouchableOpacity key={label} style={[styles.keyBtn, { paddingHorizontal: 14 }]} onPress={() => {
                   const key = label === 'Tab' ? 'Tab'
@@ -1819,29 +1830,29 @@ export default function VoiceScreen() {
             </ScrollView>
 
             {/* Invisible TextInput + keyboard toggle */}
-            <View style={[{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, marginBottom: insets.bottom + 8 }]}>
-              <TextInput
-                ref={r => { shellKeyboardRefs.current[name] = r; }}
-                style={{ opacity: 0, height: 0, width: 0 }}
-                value={shellInputs[name] ?? ''}
-                onChangeText={text => onShellInputChange(name, text)}
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoComplete="off"
-                blurOnSubmit={false}
-              />
+            <TextInput
+              ref={r => { shellKeyboardRefs.current[name] = r; }}
+              style={{ opacity: 0, height: 0, width: 0 }}
+              value={shellInputs[name] ?? ''}
+              onChangeText={text => onShellInputChange(name, text)}
+              onKeyPress={({ nativeEvent }) => {
+                if (nativeEvent.key === 'Backspace') {
+                  sendShellInput(name, '\x7f', undefined, true);
+                }
+              }}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="off"
+              blurOnSubmit={false}
+            />
+            {!keyboardVisible && (
               <TouchableOpacity
-                style={[styles.textSendBtn, { flex: 1, marginRight: 0 }]}
-                onPress={() => {
-                  const ref = shellKeyboardRefs.current[name];
-                  if (ref) {
-                    ref.focus();
-                  }
-                }}
+                style={{ backgroundColor: '#4A90E2', borderRadius: 10, marginHorizontal: 8, marginBottom: insets.bottom + 8, height: 40, alignItems: 'center', justifyContent: 'center' }}
+                onPress={() => shellKeyboardRefs.current[name]?.focus()}
               >
                 <Text style={styles.textSendBtnText}>⌨️</Text>
               </TouchableOpacity>
-            </View>
+            )}
           </View>
         ))}
       </ScrollView>
@@ -1924,8 +1935,8 @@ const styles = StyleSheet.create({
   terminalBlock:      { marginHorizontal: 12, marginBottom: 8, backgroundColor: '#0d0d1a', borderRadius: 8 },
   terminalScroll:     { padding: 8 },
   terminalText:       { color: '#4AE27A', fontSize: 11, fontFamily: 'monospace' },
-  terminalKeys:       { flexDirection: 'row', justifyContent: 'center', gap: 16, padding: 8 },
-  keyBtn:             { backgroundColor: '#2a2a4e', paddingHorizontal: 24, paddingVertical: 10, borderRadius: 8 },
+  terminalKeys:       { flexDirection: 'row', justifyContent: 'center', gap: 16, paddingHorizontal: 8 },
+  keyBtn:             { backgroundColor: '#2a2a4e', paddingHorizontal: 24, paddingVertical: 4, borderRadius: 8 },
   keyText:            { color: '#fff', fontSize: 20 },
   shellPageHeader:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#2a2a4e' },
   shellPageTitle:     { color: '#4AE27A', fontSize: 16, fontWeight: 'bold', fontFamily: 'monospace' },

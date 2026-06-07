@@ -532,17 +532,33 @@ def shell_input(session: str = Query(...), body: dict = Body(...), _=Depends(ver
 
 @app.post("/shell-create")
 def shell_create(body: dict = Body(...), _=Depends(verify_key)):
-    """Create a new tmux session."""
+    """Create a new tmux session, optionally starting in a given directory."""
+    import os
     name = body.get("name", "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Name required")
+    start_dir = body.get("dir", "").strip()
+    if not start_dir or not os.path.isdir(start_dir):
+        start_dir = os.path.expanduser("~")
     result = subprocess.run(
-        ["tmux", "new-session", "-d", "-s", name],
+        ["tmux", "new-session", "-d", "-s", name, "-c", start_dir],
         capture_output=True, text=True
     )
     if result.returncode != 0:
         raise HTTPException(status_code=400, detail=f"Failed to create session: {result.stderr.strip()}")
     return {"ok": True, "name": name}
+
+
+@app.delete("/shell-session")
+def shell_delete(session: str = Query(...), _=Depends(verify_key)):
+    """Kill a tmux shell session."""
+    result = subprocess.run(
+        ["tmux", "kill-session", "-t", session],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise HTTPException(status_code=404, detail=f"Session not found or already closed: {result.stderr.strip()}")
+    return {"ok": True, "name": session}
 
 
 # ── Auto-close idle sessions ────────────────────────────────────────────────
