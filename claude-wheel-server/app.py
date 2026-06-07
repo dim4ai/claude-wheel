@@ -514,12 +514,17 @@ def shell_screen(session: str = Query(...), start: int = Query(0), count: int = 
 
 @app.post("/shell-input")
 def shell_input(session: str = Query(...), body: dict = Body(...), _=Depends(verify_key)):
-    """Send text input to a tmux session."""
+    """Send text input to a tmux session. key= for special keys, raw=true to send without Enter."""
     text = body.get("text", "")
-    result = subprocess.run(
-        ["tmux", "send-keys", "-t", session, text, "Enter"],
-        capture_output=True, text=True
-    )
+    key  = body.get("key", "")
+    raw  = body.get("raw", False)
+    if key:
+        args = ["tmux", "send-keys", "-t", session, key, ""]
+    elif raw:
+        args = ["tmux", "send-keys", "-t", session, text, ""]
+    else:
+        args = ["tmux", "send-keys", "-t", session, text, "Enter"]
+    result = subprocess.run(args, capture_output=True, text=True)
     if result.returncode != 0:
         raise HTTPException(status_code=404, detail=f"Session '{session}' not found")
     return {"ok": True}

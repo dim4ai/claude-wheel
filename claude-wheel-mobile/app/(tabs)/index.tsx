@@ -249,6 +249,7 @@ export default function VoiceScreen() {
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const pagerRef = useRef<ScrollView>(null);
   const shellTerminalRefs = useRef<{[name: string]: ScrollView | null}>({});
+  const shellPrevInputRef = useRef<{[name: string]: string}>({});
   const currentPageIndexRef = useRef(0);
   const openShellSessionsRef = useRef<string[]>([]);
   const [creatingSession, setCreatingSession] = useState(false);
@@ -733,12 +734,32 @@ export default function VoiceScreen() {
     } catch {}
   }
 
-  async function sendShellInput(name: string, text: string, key?: string) {
+  async function sendShellInput(name: string, text: string, key?: string, raw?: boolean) {
     await fetch(`${serverUrl}/shell-input?session=${encodeURIComponent(name)}`, {
       method: 'POST',
       headers: apiHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(key ? { key } : { text }),
+      body: JSON.stringify(key ? { key } : raw ? { text, raw: true } : { text }),
     });
+  }
+
+  async function onShellInputChange(name: string, newText: string) {
+    const prev = shellPrevInputRef.current[name] ?? '';
+    shellPrevInputRef.current[name] = newText;
+    setShellInputs(p => ({ ...p, [name]: newText }));
+
+    if (newText.length > prev.length && newText.startsWith(prev)) {
+      // Added characters at end
+      await sendShellInput(name, newText.slice(prev.length), undefined, true);
+    } else if (newText.length < prev.length && prev.startsWith(newText)) {
+      // Deleted characters from end — send backspaces
+      const count = prev.length - newText.length;
+      await sendShellInput(name, '\x7f'.repeat(count), undefined, true);
+    } else {
+      // Autocorrect or paste — clear and retype
+      const backspaces = '\x7f'.repeat(prev.length);
+      if (backspaces) await sendShellInput(name, backspaces, undefined, true);
+      if (newText) await sendShellInput(name, newText, undefined, true);
+    }
   }
 
   // Poll shell screen for the current shell page
@@ -1794,23 +1815,22 @@ export default function VoiceScreen() {
               <TextInput
                 style={[styles.textInputField, { fontSize }]}
                 value={shellInputs[name] ?? ''}
-                onChangeText={text => setShellInputs(prev => ({ ...prev, [name]: text }))}
+                onChangeText={text => onShellInputChange(name, text)}
                 placeholder="Shell input..."
                 placeholderTextColor="#555"
                 autoCapitalize="none"
                 autoCorrect={false}
+                autoComplete="off"
               />
               <TouchableOpacity
-                style={[styles.textSendBtn, !(shellInputs[name] ?? '').trim() && { opacity: 0.4 }]}
+                style={styles.textSendBtn}
                 onPress={async () => {
-                  const text = (shellInputs[name] ?? '').trim();
-                  if (!text) return;
+                  await sendShellInput(name, '', 'Enter');
                   setShellInputs(prev => ({ ...prev, [name]: '' }));
-                  await sendShellInput(name, text + '\n');
+                  shellPrevInputRef.current[name] = '';
                 }}
-                disabled={!(shellInputs[name] ?? '').trim()}
               >
-                <Text style={styles.textSendBtnText}>↑</Text>
+                <Text style={styles.textSendBtnText}>↵</Text>
               </TouchableOpacity>
             </View>
           </View>
