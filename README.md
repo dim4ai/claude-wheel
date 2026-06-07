@@ -1,6 +1,6 @@
 # Claude Wheel
 
-Mobile voice interface for Claude Code — control Claude and manage your projects from your phone, untethered from your desk.
+Mobile voice interface for Claude Code — control Claude and manage your projects from your phone, not just from your computer.
 
 ![Claude Wheel](docs/img/lifestyle.jpg)
 

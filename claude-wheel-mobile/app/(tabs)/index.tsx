@@ -1522,7 +1522,7 @@ export default function VoiceScreen() {
       <View onLayout={e => setBelowTerminalH(e.nativeEvent.layout.height)}>
       <View style={styles.textInputRow}>
         <TextInput
-          style={styles.textInputField}
+          style={[styles.textInputField, { fontSize }]}
           value={textInput}
           onChangeText={setTextInput}
           placeholder="Type a message..."
