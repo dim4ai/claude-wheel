@@ -237,6 +237,8 @@ export default function VoiceScreen() {
   const [sessionsOpen, setSessionsOpen]       = useState(false);
   const [sessionsExpanded, setSessionsExpanded] = useState(false);
   const [newSessionExpanded, setNewSessionExpanded] = useState(false);
+  const [shellSessionsExpanded, setShellSessionsExpanded] = useState(false);
+  const [shellSessionsList, setShellSessionsList] = useState<{name: string; running: boolean}[]>([]);
   const [creatingSession, setCreatingSession] = useState(false);
   const [sessionsList, setSessionsList]     = useState<{name: string; dir: string; running: boolean}[]>([]);
   const [newSessionName, setNewSessionName] = useState('');
@@ -1400,7 +1402,7 @@ export default function VoiceScreen() {
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <ScrollView style={styles.modalSheet} onStartShouldSetResponder={() => true} keyboardShouldPersistTaps="handled">
             <TouchableOpacity style={styles.sectionHeader} onPress={() => setSessionsExpanded(v => !v)}>
-              <Text style={styles.sectionHeaderText}>Sessions {sessionsExpanded ? '▲' : '▼'}</Text>
+              <Text style={styles.sectionHeaderText}>Claude sessions {sessionsExpanded ? '▲' : '▼'}</Text>
             </TouchableOpacity>
             {sessionsExpanded && sessionsList.map(s => (
               <View key={s.name} style={styles.sessionRow}>
@@ -1426,6 +1428,22 @@ export default function VoiceScreen() {
                 )}
               </View>
             ))}
+
+            <TouchableOpacity style={styles.sectionHeader} onPress={() => setShellSessionsExpanded(v => !v)}>
+              <Text style={styles.sectionHeaderText}>Shell sessions {shellSessionsExpanded ? '▲' : '▼'}</Text>
+            </TouchableOpacity>
+            {shellSessionsExpanded && (
+              shellSessionsList.length === 0
+                ? <Text style={[styles.sessionDir, { paddingHorizontal: 16, paddingVertical: 8 }]}>No shell sessions</Text>
+                : shellSessionsList.map(s => (
+                  <View key={s.name} style={styles.sessionRow}>
+                    <TouchableOpacity style={{ flex: 1 }}>
+                      <Text style={styles.sessionName}>   {s.name}</Text>
+                      <Text style={styles.sessionDir}>{s.running ? '🟢 running' : '⚪ stopped'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))
+            )}
 
             <TouchableOpacity style={styles.sectionHeader} onPress={() => setNewSessionExpanded(v => !v)}>
               <Text style={styles.sectionHeaderText}>New session {newSessionExpanded ? '▲' : '▼'}</Text>
