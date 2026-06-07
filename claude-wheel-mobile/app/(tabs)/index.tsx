@@ -886,10 +886,8 @@ export default function VoiceScreen() {
   }
 
   // ── Send typed text ───────────────────────────────────────────────────────
-  async function sendText() {
-    const text = textInput.trim();
+  async function sendTextContent(text: string) {
     if (!text || status === 'processing' || status === 'speaking') return;
-    setTextInput('');
     setMessages(prev => [...prev, { role: 'user', text }]);
     setStatus('processing');
     cancelledRef.current = false;
@@ -915,6 +913,13 @@ export default function VoiceScreen() {
     } finally {
       setStatus('idle');
     }
+  }
+
+  async function sendText() {
+    const text = textInput.trim();
+    if (!text) return;
+    setTextInput('');
+    await sendTextContent(text);
   }
 
   // ── VAD ───────────────────────────────────────────────────────────────────
@@ -1474,6 +1479,11 @@ export default function VoiceScreen() {
                 <Text style={styles.copyBtnText}>⎘</Text>
               </TouchableOpacity>
             )}
+            {msg.role === 'user' && (
+              <TouchableOpacity onPress={() => sendTextContent(msg.text)} style={styles.copyBtn}>
+                <Text style={styles.copyBtnText}>↺</Text>
+              </TouchableOpacity>
+            )}
           </View>
         ))}
       </ScrollView>
@@ -1609,8 +1619,8 @@ const styles = StyleSheet.create({
   langCheck:          { color: '#4AE27A', fontSize: 18, fontWeight: 'bold' },
   messages:           { flex: 1 },
   bubble:             { borderRadius: 12, padding: 10, marginBottom: 8, maxWidth: '80%' },
-  copyBtn:            { alignSelf: 'flex-end', marginTop: 4, opacity: 0.5 },
-  copyBtnText:        { color: '#fff', fontSize: 14 },
+  copyBtn:            { alignSelf: 'flex-end', opacity: 0.5 },
+  copyBtnText:        { color: '#fff', fontSize: 18 },
   userBubble:         { backgroundColor: '#4A90E2', alignSelf: 'flex-end' },
   claudeBubble:       { backgroundColor: '#2a2a4e', alignSelf: 'flex-start' },
   bubbleText:         { color: '#fff', fontSize: 15 },
