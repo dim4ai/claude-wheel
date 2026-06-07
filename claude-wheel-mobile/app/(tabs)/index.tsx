@@ -249,6 +249,7 @@ export default function VoiceScreen() {
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const pagerRef = useRef<ScrollView>(null);
   const shellTerminalRefs = useRef<{[name: string]: ScrollView | null}>({});
+  const shellKeyboardRefs = useRef<{[name: string]: TextInput | null}>({});
   const shellPrevInputRef = useRef<{[name: string]: string}>({});
   const currentPageIndexRef = useRef(0);
   const openShellSessionsRef = useRef<string[]>([]);
@@ -1784,10 +1785,10 @@ export default function VoiceScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Terminal output */}
+            {/* Terminal output — fills all available space */}
             <ScrollView
               ref={r => { shellTerminalRefs.current[name] = r; }}
-              style={styles.shellTerminal}
+              style={[styles.shellTerminal, { flex: 1 }]}
               contentContainerStyle={{ padding: 8 }}
               onContentSizeChange={() => shellTerminalRefs.current[name]?.scrollToEnd({ animated: false })}
             >
@@ -1796,41 +1797,49 @@ export default function VoiceScreen() {
 
             {/* Special keys row */}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={styles.terminalKeys}>
-              {(['↑', '↓', 'Ctrl+C', '|', '~', '/', 'Tab'] as const).map(label => (
+              {(['↑', '↓', 'Ctrl+C', '|', '~', '/', '↵', 'Tab'] as const).map(label => (
                 <TouchableOpacity key={label} style={[styles.keyBtn, { paddingHorizontal: 14 }]} onPress={() => {
                   const key = label === 'Tab' ? 'Tab'
                             : label === '↑' ? 'Up'
                             : label === '↓' ? 'Down'
                             : label === 'Ctrl+C' ? 'C-c'
+                            : label === '↵' ? 'Enter'
                             : label;
-                  sendShellInput(name, '', key);
+                  if (key === 'Enter') {
+                    sendShellInput(name, '', 'Enter');
+                    setShellInputs(prev => ({ ...prev, [name]: '' }));
+                    shellPrevInputRef.current[name] = '';
+                  } else {
+                    sendShellInput(name, '', key);
+                  }
                 }}>
                   <Text style={[styles.keyText, { fontSize: 14 }]}>{label}</Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
 
-            {/* Shell input row */}
-            <View style={[styles.textInputRow, { marginBottom: insets.bottom + 8 }]}>
+            {/* Invisible TextInput + keyboard toggle */}
+            <View style={[{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, marginBottom: insets.bottom + 8 }]}>
               <TextInput
-                style={[styles.textInputField, { fontSize }]}
+                ref={r => { shellKeyboardRefs.current[name] = r; }}
+                style={{ opacity: 0, height: 0, width: 0 }}
                 value={shellInputs[name] ?? ''}
                 onChangeText={text => onShellInputChange(name, text)}
-                placeholder="Shell input..."
-                placeholderTextColor="#555"
                 autoCapitalize="none"
                 autoCorrect={false}
                 autoComplete="off"
+                blurOnSubmit={false}
               />
               <TouchableOpacity
-                style={styles.textSendBtn}
-                onPress={async () => {
-                  await sendShellInput(name, '', 'Enter');
-                  setShellInputs(prev => ({ ...prev, [name]: '' }));
-                  shellPrevInputRef.current[name] = '';
+                style={[styles.textSendBtn, { flex: 1, marginRight: 0 }]}
+                onPress={() => {
+                  const ref = shellKeyboardRefs.current[name];
+                  if (ref) {
+                    ref.focus();
+                  }
                 }}
               >
-                <Text style={styles.textSendBtnText}>↵</Text>
+                <Text style={styles.textSendBtnText}>⌨️</Text>
               </TouchableOpacity>
             </View>
           </View>
