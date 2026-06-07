@@ -84,7 +84,7 @@ function hashPin(pin: string, salt: string): string {
 
 export default function VoiceScreen() {
   const insets = useSafeAreaInsets();
-  const { height: screenHeight } = useWindowDimensions();
+  const { height: screenHeight, width: screenWidth } = useWindowDimensions();
 
 
   // ── PIN state ─────────────────────────────────────────────────────────────
@@ -242,6 +242,11 @@ export default function VoiceScreen() {
   const [newShellSessionExpanded, setNewShellSessionExpanded] = useState(false);
   const [newShellSessionName, setNewShellSessionName] = useState('');
   const [creatingShellSession, setCreatingShellSession] = useState(false);
+  const [openShellSessions, setOpenShellSessions] = useState<string[]>([]);
+  const [shellScreens, setShellScreens] = useState<{[name: string]: string}>({});
+  const [shellInputs, setShellInputs] = useState<{[name: string]: string}>({});
+  const [currentPageIndex, setCurrentPageIndex] = useState(0);
+  const pagerRef = useRef<ScrollView>(null);
   const [creatingSession, setCreatingSession] = useState(false);
   const [sessionsList, setSessionsList]     = useState<{name: string; dir: string; running: boolean}[]>([]);
   const [newSessionName, setNewSessionName] = useState('');
@@ -696,6 +701,33 @@ export default function VoiceScreen() {
       }
     } catch {}
   }
+
+  async function sendShellInput(name: string, text: string, key?: string) {
+    await fetch(`${serverUrl}/shell-input?session=${encodeURIComponent(name)}`, {
+      method: 'POST',
+      headers: apiHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(key ? { key } : { text }),
+    });
+  }
+
+  // Poll shell screen for the current shell page
+  useEffect(() => {
+    if (currentPageIndex === 0 || openShellSessions.length === 0) return;
+    const shellName = openShellSessions[currentPageIndex - 1];
+    if (!shellName || !serverUrl) return;
+    async function pollShellScreen() {
+      try {
+        const r = await fetch(`${serverUrl}/shell-screen?session=${encodeURIComponent(shellName)}&count=80`, {
+          headers: apiHeaders(),
+        });
+        const data = await r.json();
+        setShellScreens(prev => ({ ...prev, [shellName]: data.screen ?? '' }));
+      } catch {}
+    }
+    pollShellScreen();
+    const interval = setInterval(pollShellScreen, 2000);
+    return () => clearInterval(interval);
+  }, [currentPageIndex, openShellSessions, serverUrl]);
 
   async function sendKey(key: string) {
     try {
@@ -1481,7 +1513,20 @@ export default function VoiceScreen() {
                 ? <Text style={[styles.sessionDir, { paddingHorizontal: 16, paddingVertical: 8 }]}>No shell sessions</Text>
                 : shellSessionsList.map(s => (
                   <View key={s.name} style={styles.sessionRow}>
-                    <TouchableOpacity style={{ flex: 1 }}>
+                    <TouchableOpacity style={{ flex: 1 }} onPress={() => {
+                      setOpenShellSessions(prev => {
+                        if (prev.includes(s.name)) return prev;
+                        return [...prev, s.name];
+                      });
+                      setSessionsOpen(false);
+                      setTimeout(() => {
+                        const idx = openShellSessions.includes(s.name)
+                          ? openShellSessions.indexOf(s.name) + 1
+                          : openShellSessions.length + 1;
+                        pagerRef.current?.scrollTo({ x: screenWidth * idx, animated: true });
+                        setCurrentPageIndex(idx);
+                      }, 100);
+                    }}>
                       <Text style={styles.sessionName}>   {s.name}</Text>
                       <Text style={styles.sessionDir}>{s.running ? '🟢 running' : '⚪ stopped'}</Text>
                     </TouchableOpacity>
@@ -1532,116 +1577,201 @@ export default function VoiceScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      <ScrollView ref={messagesScrollRef} style={styles.messages} contentContainerStyle={{ padding: 12 }} onScrollBeginDrag={Keyboard.dismiss} keyboardShouldPersistTaps="handled" onContentSizeChange={() => messagesScrollRef.current?.scrollToEnd({ animated: false })}>
-        {messages.map((msg, i) => (
-          <View key={i} style={[styles.bubble, msg.role === 'user' ? styles.userBubble : styles.claudeBubble]}>
-            <Text style={[styles.bubbleText, { fontSize }]}>{msg.text}</Text>
-            {msg.role === 'claude' && (
-              <TouchableOpacity onPress={() => Clipboard.setStringAsync(msg.text)} style={styles.copyBtn}>
-                <Text style={styles.copyBtnText}>⎘</Text>
-              </TouchableOpacity>
+      {/* Horizontal pager: page 0 = Claude chat, pages 1+ = shell sessions */}
+      <ScrollView
+        ref={pagerRef}
+        horizontal
+        pagingEnabled
+        scrollEnabled={!keyboardVisible}
+        showsHorizontalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        style={{ flex: 1 }}
+        contentContainerStyle={{ height: '100%' }}
+        onMomentumScrollEnd={e => {
+          const idx = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
+          setCurrentPageIndex(idx);
+        }}
+      >
+        {/* Page 0: Claude chat */}
+        <View style={{ width: screenWidth, flex: 1 }}>
+          <ScrollView ref={messagesScrollRef} style={styles.messages} contentContainerStyle={{ padding: 12 }} onScrollBeginDrag={Keyboard.dismiss} keyboardShouldPersistTaps="handled" onContentSizeChange={() => messagesScrollRef.current?.scrollToEnd({ animated: false })}>
+            {messages.map((msg, i) => (
+              <View key={i} style={[styles.bubble, msg.role === 'user' ? styles.userBubble : styles.claudeBubble]}>
+                <Text style={[styles.bubbleText, { fontSize }]}>{msg.text}</Text>
+                {msg.role === 'claude' && (
+                  <TouchableOpacity onPress={() => Clipboard.setStringAsync(msg.text)} style={styles.copyBtn}>
+                    <Text style={styles.copyBtnText}>⎘</Text>
+                  </TouchableOpacity>
+                )}
+                {msg.role === 'user' && (
+                  <TouchableOpacity onPress={() => sendTextContent(msg.text)} style={styles.copyBtn}>
+                    <Text style={styles.copyBtnText}>↺</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            ))}
+          </ScrollView>
+
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+
+          <TouchableOpacity style={[styles.terminalToggle, sessionHung && { backgroundColor: '#5a1a1a' }]} onPress={toggleTerminal} onLayout={e => setTerminalToggleH(e.nativeEvent.layout.height)}>
+            <Text style={[styles.terminalToggleText, sessionHung && { color: '#E24A4A' }]}>{terminalOpen ? '▲ Terminal' : '▼ Terminal'}</Text>
+          </TouchableOpacity>
+
+          {terminalOpen && (
+            <View style={styles.terminalBlock}>
+              <ScrollView
+                ref={terminalScrollRef}
+                style={[styles.terminalScroll, { height: Math.min(
+                  terminalLines * (fontSize + 3),
+                  screenHeight - insets.top - insets.bottom - headerH - terminalToggleH - terminalKeysH - belowTerminalH - 24
+                )}]}
+                onScrollBeginDrag={() => { terminalAtBottom.current = false; }}
+                onScrollEndDrag={({ nativeEvent: e }) => {
+                  terminalAtBottom.current = e.layoutMeasurement.height + e.contentOffset.y >= e.contentSize.height - 20;
+                }}
+                onMomentumScrollEnd={({ nativeEvent: e }) => {
+                  terminalAtBottom.current = e.layoutMeasurement.height + e.contentOffset.y >= e.contentSize.height - 20;
+                }}
+              >
+                <Text style={[styles.terminalText, { fontSize }]}>{screenLines.join('\n')}</Text>
+              </ScrollView>
+              <View style={styles.terminalKeys} onLayout={e => setTerminalKeysH(e.nativeEvent.layout.height)}>
+                <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('Escape')}>
+                  <Text style={styles.keyText}>Esc</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('Up')}>
+                  <Text style={styles.keyText}>↑</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('Down')}>
+                  <Text style={styles.keyText}>↓</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('Enter')}>
+                  <Text style={styles.keyText}>↵</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          <View onLayout={e => setBelowTerminalH(e.nativeEvent.layout.height)}>
+            <View style={styles.textInputRow}>
+              <TextInput
+                style={[styles.textInputField, { fontSize }]}
+                value={textInput}
+                onChangeText={setTextInput}
+                placeholder="Type a message..."
+                placeholderTextColor="#555"
+                multiline
+                maxLength={2000}
+              />
+              {status === 'processing' || status === 'speaking'
+                ? <TouchableOpacity style={[styles.textSendBtn, { backgroundColor: '#8B3A3A' }]} onPress={cancelProcessing}>
+                    <Text style={styles.textSendBtnText}>✕</Text>
+                  </TouchableOpacity>
+                : <TouchableOpacity
+                    style={[styles.textSendBtn, !textInput.trim() && { opacity: 0.4 }]}
+                    onPress={sendText}
+                    disabled={!textInput.trim()}
+                  >
+                    <Text style={styles.textSendBtnText}>↑</Text>
+                  </TouchableOpacity>
+              }
+            </View>
+
+            {!keyboardVisible && !vadMode && (
+              <View style={[styles.buttonRow, { marginBottom: insets.bottom + 1 }]}>
+                <TouchableOpacity
+                  style={[styles.button, { backgroundColor: buttonColor, flex: 1 }]}
+                  onPress={handlePress}
+                  disabled={status === 'processing' || status === 'speaking'}
+                >
+                  {status === 'processing'
+                    ? <ActivityIndicator color="#fff" />
+                    : <Text style={styles.buttonText}>{buttonLabel}</Text>
+                  }
+                </TouchableOpacity>
+              </View>
             )}
-            {msg.role === 'user' && (
-              <TouchableOpacity onPress={() => sendTextContent(msg.text)} style={styles.copyBtn}>
-                <Text style={styles.copyBtnText}>↺</Text>
-              </TouchableOpacity>
+
+            {!keyboardVisible && vadMode && (
+              <View style={[styles.vadRow, { marginBottom: insets.bottom + 1 }]}>
+                <View style={[styles.vadIndicator, { backgroundColor: buttonColor, flex: 1 }]}>
+                  {status === 'processing'
+                    ? <ActivityIndicator color="#fff" />
+                    : <Text style={styles.buttonText}>{buttonLabel}</Text>
+                  }
+                </View>
+              </View>
             )}
+          </View>
+        </View>
+
+        {/* Pages 1+: Shell sessions */}
+        {openShellSessions.map((name) => (
+          <View key={name} style={{ width: screenWidth, flex: 1 }}>
+            {/* Shell page header */}
+            <View style={styles.shellPageHeader}>
+              <Text style={styles.shellPageTitle}>{name}</Text>
+              <TouchableOpacity onPress={() => {
+                setOpenShellSessions(prev => {
+                  const next = prev.filter(n => n !== name);
+                  return next;
+                });
+                pagerRef.current?.scrollTo({ x: 0, animated: true });
+                setCurrentPageIndex(0);
+              }}>
+                <Text style={styles.shellPageClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Terminal output */}
+            <ScrollView style={styles.shellTerminal} contentContainerStyle={{ padding: 8 }}>
+              <Text style={[styles.terminalText, { fontSize }]}>{shellScreens[name] ?? ''}</Text>
+            </ScrollView>
+
+            {/* Special keys row */}
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={styles.terminalKeys}>
+              {(['Tab', '↑', '↓', 'Ctrl+C', '|', '~', '/'] as const).map(label => (
+                <TouchableOpacity key={label} style={[styles.keyBtn, { paddingHorizontal: 14 }]} onPress={() => {
+                  const key = label === 'Tab' ? 'Tab'
+                            : label === '↑' ? 'Up'
+                            : label === '↓' ? 'Down'
+                            : label === 'Ctrl+C' ? 'C-c'
+                            : label;
+                  sendShellInput(name, '', key);
+                }}>
+                  <Text style={[styles.keyText, { fontSize: 14 }]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            {/* Shell input row */}
+            <View style={[styles.textInputRow, { marginBottom: insets.bottom + 8 }]}>
+              <TextInput
+                style={[styles.textInputField, { fontSize }]}
+                value={shellInputs[name] ?? ''}
+                onChangeText={text => setShellInputs(prev => ({ ...prev, [name]: text }))}
+                placeholder="Shell input..."
+                placeholderTextColor="#555"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <TouchableOpacity
+                style={[styles.textSendBtn, !(shellInputs[name] ?? '').trim() && { opacity: 0.4 }]}
+                onPress={async () => {
+                  const text = (shellInputs[name] ?? '').trim();
+                  if (!text) return;
+                  setShellInputs(prev => ({ ...prev, [name]: '' }));
+                  await sendShellInput(name, text + '\n');
+                }}
+                disabled={!(shellInputs[name] ?? '').trim()}
+              >
+                <Text style={styles.textSendBtnText}>↑</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         ))}
       </ScrollView>
-
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-
-      <TouchableOpacity style={[styles.terminalToggle, sessionHung && { backgroundColor: '#5a1a1a' }]} onPress={toggleTerminal} onLayout={e => setTerminalToggleH(e.nativeEvent.layout.height)}>
-        <Text style={[styles.terminalToggleText, sessionHung && { color: '#E24A4A' }]}>{terminalOpen ? '▲ Terminal' : '▼ Terminal'}</Text>
-      </TouchableOpacity>
-
-      {terminalOpen && (
-        <View style={styles.terminalBlock}>
-          <ScrollView
-            ref={terminalScrollRef}
-            style={[styles.terminalScroll, { height: Math.min(
-              terminalLines * (fontSize + 3),
-              screenHeight - insets.top - insets.bottom - headerH - terminalToggleH - terminalKeysH - belowTerminalH - 24
-            )}]}
-            onScrollBeginDrag={() => { terminalAtBottom.current = false; }}
-            onScrollEndDrag={({ nativeEvent: e }) => {
-              terminalAtBottom.current = e.layoutMeasurement.height + e.contentOffset.y >= e.contentSize.height - 20;
-            }}
-            onMomentumScrollEnd={({ nativeEvent: e }) => {
-              terminalAtBottom.current = e.layoutMeasurement.height + e.contentOffset.y >= e.contentSize.height - 20;
-            }}
-          >
-            <Text style={[styles.terminalText, { fontSize }]}>{screenLines.join('\n')}</Text>
-          </ScrollView>
-          <View style={styles.terminalKeys} onLayout={e => setTerminalKeysH(e.nativeEvent.layout.height)}>
-            <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('Escape')}>
-              <Text style={styles.keyText}>Esc</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('Up')}>
-              <Text style={styles.keyText}>↑</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('Down')}>
-              <Text style={styles.keyText}>↓</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('Enter')}>
-              <Text style={styles.keyText}>↵</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-
-      <View onLayout={e => setBelowTerminalH(e.nativeEvent.layout.height)}>
-      <View style={styles.textInputRow}>
-        <TextInput
-          style={[styles.textInputField, { fontSize }]}
-          value={textInput}
-          onChangeText={setTextInput}
-          placeholder="Type a message..."
-          placeholderTextColor="#555"
-          multiline
-          maxLength={2000}
-        />
-        {status === 'processing' || status === 'speaking'
-          ? <TouchableOpacity style={[styles.textSendBtn, { backgroundColor: '#8B3A3A' }]} onPress={cancelProcessing}>
-              <Text style={styles.textSendBtnText}>✕</Text>
-            </TouchableOpacity>
-          : <TouchableOpacity
-              style={[styles.textSendBtn, !textInput.trim() && { opacity: 0.4 }]}
-              onPress={sendText}
-              disabled={!textInput.trim()}
-            >
-              <Text style={styles.textSendBtnText}>↑</Text>
-            </TouchableOpacity>
-        }
-      </View>
-
-      {!keyboardVisible && !vadMode && (
-        <View style={[styles.buttonRow, { marginBottom: insets.bottom + 1 }]}>
-          <TouchableOpacity
-            style={[styles.button, { backgroundColor: buttonColor, flex: 1 }]}
-            onPress={handlePress}
-            disabled={status === 'processing' || status === 'speaking'}
-          >
-            {status === 'processing'
-              ? <ActivityIndicator color="#fff" />
-              : <Text style={styles.buttonText}>{buttonLabel}</Text>
-            }
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {!keyboardVisible && vadMode && (
-        <View style={[styles.vadRow, { marginBottom: insets.bottom + 1 }]}>
-          <View style={[styles.vadIndicator, { backgroundColor: buttonColor, flex: 1 }]}>
-            {status === 'processing'
-              ? <ActivityIndicator color="#fff" />
-              : <Text style={styles.buttonText}>{buttonLabel}</Text>
-            }
-          </View>
-        </View>
-      )}
-      </View>
     </KeyboardAvoidingView>
   );
 }
@@ -1724,4 +1854,8 @@ const styles = StyleSheet.create({
   terminalKeys:       { flexDirection: 'row', justifyContent: 'center', gap: 16, padding: 8 },
   keyBtn:             { backgroundColor: '#2a2a4e', paddingHorizontal: 24, paddingVertical: 10, borderRadius: 8 },
   keyText:            { color: '#fff', fontSize: 20 },
+  shellPageHeader:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#2a2a4e' },
+  shellPageTitle:     { color: '#4AE27A', fontSize: 16, fontWeight: 'bold', fontFamily: 'monospace' },
+  shellPageClose:     { color: '#8B3A3A', fontSize: 20, paddingHorizontal: 8 },
+  shellTerminal:      { flex: 1, backgroundColor: '#0d0d1a' },
 });
