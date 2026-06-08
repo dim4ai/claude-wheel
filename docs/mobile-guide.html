@@ -132,7 +132,8 @@
       <li><a href="#voice">Voice input</a></li>
       <li><a href="#text-input">Text input</a></li>
       <li><a href="#terminal">Terminal</a></li>
-      <li><a href="#sessions">Session management</a></li>
+      <li><a href="#sessions">Claude session management</a></li>
+      <li><a href="#shell">Shell session management</a></li>
       <li><a href="#encryption">Data encryption</a></li>
       <li><a href="#build">Building APK</a></li>
       <li><a href="#tips">Tips</a></li>
@@ -359,7 +360,7 @@
   <p>Example: Claude is asking permission to perform an action. Three response options are visible. Select the one you need with the arrows and press Enter.</p>
 
   <!-- ── Sessions ── -->
-  <h2 id="sessions">Session management</h2>
+  <h2 id="sessions">Claude session management</h2>
   <p>Tap the session name below the app header to open the session list.</p>
 
   <div class="screen">
@@ -405,6 +406,61 @@
     </div>
   </div>
 
+  <!-- ── Shell session management ── -->
+  <h2 id="shell">Shell session management</h2>
+  <p>Shell sessions provide terminal access to the server. These are regular tmux sessions on the server, independent of Claude Code — you can run any commands, view logs, restart services. Terminal history can be scrolled with a finger.</p>
+
+  <h3>Opening a Shell session</h3>
+  <div class="screen">
+    <img src="img/shell-sessions-list.jpg" alt="Shell session list">
+    <div class="screen-text">
+      <p>Tap the current Claude session name in the header to open the menu. The <strong>Shell sessions</strong> section shows the list of existing tmux sessions on the server. Tap a session — it will open by swiping right from the main screen.</p>
+      <p>To return to the main screen — swipe left. To close the Shell page, tap <strong>✕</strong> in the top-right corner — <strong>the session on the server continues running.</strong></p>
+      <p>Open Shell sessions are saved between app restarts — after login they will be available immediately.</p>
+    </div>
+  </div>
+
+  <h3>Creating a new Shell session</h3>
+  <p>Expand <strong>New Shell session</strong> in the menu, enter a name and tap <strong>+ Create</strong>. The new session starts in the directory from <strong>General → Projects directory</strong> settings. If the directory does not exist — the session starts from the user's home directory.</p>
+
+  <h3>Deleting a Shell session</h3>
+  <p>In the <strong>Shell sessions</strong> menu tap <strong>✕</strong> next to the session. A confirmation dialog will appear — after confirming, the tmux session will be terminated on the server.</p>
+
+  <h3>Terminal input</h3>
+  <div class="screen">
+    <img src="img/shell-session-inside.jpg" alt="Inside a Shell session">
+    <div class="screen-text">
+  <ul>
+    <li>Tap <strong>⌨️</strong> to open the keyboard.</li>
+    <li>Everything you type goes directly to the terminal — character by character.</li>
+    <li>Paste from clipboard: use <strong>Ctrl</strong> + <strong>V</strong> via sticky modifiers.</li>
+  </ul>
+    </div>
+  </div>
+
+  <h3>Copying from the terminal</h3>
+  <p>Long-press text on the terminal screen to select and copy it.</p>
+
+  <h3>Special keys</h3>
+  <p>Above the keyboard button there is a row of special keys. The row scrolls horizontally.</p>
+
+  <h4 style="color:#c8d0e0; margin: 16px 0 8px;">Sticky modifiers: Ctrl, Alt, Shift</h4>
+  <p>Tap a modifier — it highlights in blue and stays pressed. Then tap a key on the keyboard — the combination is sent to the terminal and the modifier turns off.</p>
+  <ul>
+    <li><strong>Ctrl + C</strong> — interrupt a running process</li>
+    <li><strong>Ctrl + D</strong> — end session / exit bash</li>
+    <li><strong>Ctrl + Z</strong> — suspend a process</li>
+    <li><strong>Ctrl + V</strong> — paste from clipboard</li>
+    <li><strong>Shift + digit</strong> — enter a special character (<code>$</code>, <code>!</code>, <code>@</code>, <code>#</code>, etc.)</li>
+  </ul>
+
+  <h4 style="color:#c8d0e0; margin: 16px 0 8px;">Navigation keys</h4>
+  <ul>
+    <li><strong>↑ / ↓</strong> — navigate command history</li>
+    <li><strong>↵</strong> — Enter</li>
+    <li><strong>Tab</strong> — autocomplete path or command. Press twice to show all options.</li>
+  </ul>
+
   <!-- ── Data encryption ── -->
   <h2 id="encryption">Data encryption</h2>
   <p>All sensitive data is stored locally on the phone in encrypted form. The encryption key is never saved anywhere — it is derived from the password on every login and exists only in memory.</p>
@@ -413,6 +469,8 @@
   <ul>
     <li><strong>Connection data</strong> — server address, Server API Key, STT API Key</li>
     <li><strong>Conversation history</strong> — all messages in the dialogue with Claude</li>
+    <li><strong>Current Claude session name</strong> — restored after app restart</li>
+    <li><strong>Open Shell session names</strong> — list of sessions restored after app restart</li>
   </ul>
 
   <h3>Technical details</h3>

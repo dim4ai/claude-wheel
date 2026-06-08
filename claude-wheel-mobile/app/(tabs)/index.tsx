@@ -24,7 +24,7 @@ import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.1.1';
 const SPEECH_THRESHOLD = -25;
 const SILENCE_DURATION = 2500;
 const MAX_MESSAGES = 100;
@@ -200,6 +200,12 @@ export default function VoiceScreen() {
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [messages, setMessages] = useState<Message[]>([]);
   const [error, setError]       = useState('');
+  const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function showError(msg: string) {
+    setError(msg);
+    if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+    if (msg) errorTimerRef.current = setTimeout(() => setError(''), 5000);
+  }
 
   const [textInput, setTextInput]           = useState('');
   const [currentSession, setCurrentSession] = useState<string>('');
@@ -233,6 +239,7 @@ export default function VoiceScreen() {
   const [hapticOpen, setHapticOpen]         = useState(false);
   const [voiceGender, setVoiceGender]       = useState<'female' | 'male'>('female');
   const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const keyboardVisibleRef = useRef(false);
   const [currentTime, setCurrentTime] = useState(() => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
 
   const [sessionsOpen, setSessionsOpen]       = useState(false);
@@ -289,10 +296,14 @@ export default function VoiceScreen() {
   useEffect(() => {
     const show = Keyboard.addListener('keyboardDidShow', () => {
       setKeyboardVisible(true);
+      keyboardVisibleRef.current = true;
       const shellName = openShellSessionsRef.current[currentPageIndexRef.current - 1];
       if (shellName) setTimeout(() => shellTerminalRefs.current[shellName]?.scrollToEnd({ animated: true }), 300);
     });
-    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
+    const hide = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardVisible(false);
+      keyboardVisibleRef.current = false;
+    });
     return () => { show.remove(); hide.remove(); };
   }, []);
 
@@ -804,6 +815,9 @@ export default function VoiceScreen() {
         }
         const data = await r.json();
         setShellScreens(prev => ({ ...prev, [shellName]: (data.screen ?? '').trimEnd() }));
+        if (keyboardVisibleRef.current) {
+          setTimeout(() => shellTerminalRefs.current[shellName]?.scrollToEnd({ animated: false }), 50);
+        }
       } catch {}
     }
     let polling = false;
@@ -957,7 +971,7 @@ export default function VoiceScreen() {
         });
       });
     } catch (e) {
-      setError('TTS error: ' + e);
+      showError('TTS error: ' + e);
     }
   }
 
@@ -1009,7 +1023,7 @@ export default function VoiceScreen() {
       }
 
     } catch (e: any) {
-      if (e?.name !== 'AbortError') setError('Error: ' + e);
+      if (e?.name !== 'AbortError') showError('Error: ' + e);
     } finally {
       if (vadActiveRef.current) startListening();
       else setStatus('idle');
@@ -1040,7 +1054,7 @@ export default function VoiceScreen() {
         await speak(claudeText);
       }
     } catch (e: any) {
-      if (e?.name !== 'AbortError') setError('Error: ' + e);
+      if (e?.name !== 'AbortError') showError('Error: ' + e);
     } finally {
       setStatus('idle');
     }
@@ -1093,7 +1107,7 @@ export default function VoiceScreen() {
         }
       }, 200);
     } catch (e) {
-      setError('Microphone error: ' + e);
+      showError('Microphone error: ' + e);
     }
   }
 
@@ -1136,7 +1150,7 @@ export default function VoiceScreen() {
         setAudioLevel((s as any).metering ?? null);
       }, 100);
     } catch (e) {
-      setError('Microphone error: ' + e);
+      showError('Microphone error: ' + e);
     }
   }
 
