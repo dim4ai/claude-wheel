@@ -1890,7 +1890,13 @@ export default function VoiceScreen() {
                 if (mods.ctrl || mods.alt || mods.shift) {
                   shellModConsumedRef.current[name] = true;
                   if (mods.ctrl) {
-                    sendShellInput(name, '', `C-${key.toLowerCase()}`);
+                    if (key.toLowerCase() === 'v') {
+                      Clipboard.getStringAsync().then(text => {
+                        if (text) sendShellInput(name, text, undefined, true);
+                      });
+                    } else {
+                      sendShellInput(name, '', `C-${key.toLowerCase()}`);
+                    }
                   } else if (mods.alt) {
                     sendShellInput(name, '', `M-${key.toLowerCase()}`);
                   } else if (mods.shift) {
