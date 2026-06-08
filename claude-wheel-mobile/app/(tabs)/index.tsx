@@ -488,7 +488,7 @@ export default function VoiceScreen() {
       if (haptic)           setHapticStyle(haptic);
       if (gender)           setVoiceGender(gender as 'female' | 'male');
       if (lockTimeoutVal !== null) setLockTimeout(parseInt(lockTimeoutVal) || 0);
-      if (savedSession)           setCurrentSession(savedSession);
+      if (savedSession)           setCurrentSession(decrypt(savedSession));
       if (sessionLockingVal !== null) setSessionLocking(sessionLockingVal !== 'false');
       if (hapticOnHangVal)          setHapticOnHang(hapticOnHangVal);
       if (hangTimeoutVal !== null)  setHangTimeout(parseInt(hangTimeoutVal) || 20);
@@ -634,7 +634,7 @@ export default function VoiceScreen() {
           method: 'POST', headers: apiHeaders(),
         });
         setCurrentSession(name);
-        AsyncStorage.setItem(STORAGE_KEYS.currentSession, name).catch(() => {});
+        AsyncStorage.setItem(STORAGE_KEYS.currentSession, encrypt(name)).catch(() => {});
         setSessionsOpen(false);
       } catch {}
     };
