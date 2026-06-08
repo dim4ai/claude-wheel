@@ -24,7 +24,7 @@ import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const SPEECH_THRESHOLD = -25;
 const SILENCE_DURATION = 2500;
 const MAX_MESSAGES = 100;
