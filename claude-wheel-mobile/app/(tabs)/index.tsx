@@ -251,6 +251,7 @@ export default function VoiceScreen() {
   const shellTerminalRefs = useRef<{[name: string]: ScrollView | null}>({});
   const shellKeysScrollRefs = useRef<{[name: string]: ScrollView | null}>({});
   const shellKeysScrolledRef = useRef<{[name: string]: boolean}>({});
+  const shellLineCounts = useRef<{[name: string]: number}>({});
   const shellKeyboardRefs = useRef<{[name: string]: TextInput | null}>({});
   const shellPrevInputRef = useRef<{[name: string]: string}>({});
   const [shellModifiers, setShellModifiers] = useState<{[name: string]: {ctrl: boolean, alt: boolean, shift: boolean}}>({});
@@ -790,7 +791,8 @@ export default function VoiceScreen() {
     if (!shellName || !serverUrl) return;
     async function pollShellScreen() {
       try {
-        const r = await fetch(`${serverUrl}/shell-screen?session=${encodeURIComponent(shellName)}&count=80`, {
+        const count = shellLineCounts.current[shellName] ?? 80;
+        const r = await fetch(`${serverUrl}/shell-screen?session=${encodeURIComponent(shellName)}&count=${count}`, {
           headers: apiHeaders(),
         });
         if (!r.ok) {
@@ -804,8 +806,15 @@ export default function VoiceScreen() {
         setShellScreens(prev => ({ ...prev, [shellName]: (data.screen ?? '').trimEnd() }));
       } catch {}
     }
-    pollShellScreen();
-    const interval = setInterval(pollShellScreen, 2000);
+    let polling = false;
+    async function safePoll() {
+      if (polling) return;
+      polling = true;
+      await pollShellScreen();
+      polling = false;
+    }
+    safePoll();
+    const interval = setInterval(safePoll, 1000);
     return () => clearInterval(interval);
   }, [currentPageIndex, openShellSessions, serverUrl]);
 
@@ -1811,6 +1820,16 @@ export default function VoiceScreen() {
               style={[styles.shellTerminal, { flex: 1 }]}
               contentContainerStyle={{ padding: 8, paddingBottom: fontSize * 1.5 }}
               onContentSizeChange={() => shellTerminalRefs.current[name]?.scrollToEnd({ animated: false })}
+              onScrollEndDrag={({ nativeEvent }) => {
+                if (nativeEvent.contentOffset.y <= 0 && (shellLineCounts.current[name] ?? 80) < 2000) {
+                  shellLineCounts.current[name] = 2000;
+                  fetch(`${serverUrl}/shell-screen?session=${encodeURIComponent(name)}&count=2000`, {
+                    headers: apiHeaders(),
+                  }).then(r => r.json()).then(data => {
+                    setShellScreens(prev => ({ ...prev, [name]: (data.screen ?? '').trimEnd() }));
+                  }).catch(() => {});
+                }
+              }}
             >
               <Text selectable style={[styles.terminalText, { fontSize }]}>{shellScreens[name] ?? ''}</Text>
             </ScrollView>
@@ -1826,7 +1845,7 @@ export default function VoiceScreen() {
                 shellKeysScrollRefs.current[name] = r;
                 if (r && !shellKeysScrolledRef.current[name]) {
                   shellKeysScrolledRef.current[name] = true;
-                  setTimeout(() => r.scrollToEnd({ animated: false }), 0);
+                  setTimeout(() => r.scrollToEnd({ animated: false }), 300);
                 }
               }}
             >
