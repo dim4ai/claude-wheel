@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useKeepAwake } from 'expo-keep-awake';
-import { StyleSheet, TouchableOpacity, View, Text, ActivityIndicator, ScrollView, Switch, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, Keyboard, PanResponder, useWindowDimensions } from 'react-native';
+import { StyleSheet, TouchableOpacity, View, Text, ActivityIndicator, ScrollView, Switch, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, Keyboard, PanResponder, useWindowDimensions, Linking } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Crypto from 'expo-crypto';
 import CryptoJS from 'crypto-js';
@@ -525,6 +525,26 @@ export default function VoiceScreen() {
     }
     loadSettings();
   }, [pinMode]);
+
+  useEffect(() => {
+    if (!settingsReady) return;
+    fetch('https://api.github.com/repos/dim4ai/claude-wheel/releases/latest')
+      .then(r => r.json())
+      .then(data => {
+        const latest = (data.tag_name ?? '').replace(/^v/, '');
+        if (latest && latest !== APP_VERSION) {
+          Alert.alert(
+            'Update available',
+            `New version ${latest} is available (current: ${APP_VERSION})`,
+            [
+              { text: 'Download', onPress: () => Linking.openURL('https://github.com/dim4ai/claude-wheel/releases/latest') },
+              { text: 'Later', style: 'cancel' },
+            ]
+          );
+        }
+      })
+      .catch(() => {});
+  }, [settingsReady]);
 
   useEffect(() => {
     openShellSessionsRef.current = openShellSessions;

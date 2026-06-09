@@ -12,9 +12,11 @@ Mobile voice interface for Claude Code — control Claude and manage your projec
 
 **Protect your eyes.** Controlling Claude by voice means less screen time. Especially important for those who already have vision issues.
 
-**Work from anywhere.** Traffic jams, queues, breaks — any forced wait becomes productive time.
+**Work from anywhere.** Traffic jams, queues, a dull meeting — any forced wait becomes productive time.
 
 **Think on the move.** Aristotle, Rousseau, Kant, Darwin, Nietzsche — all agreed that the best ideas are born in motion. Discuss your next projects with Claude on a walk and capture thoughts in the moment — fresh air and the rhythm of your steps do their part.
+
+**Modern development means high-level thinking.** AI agents handle the routine — no need to type every command by hand. You set the goal, the agent implements it. That's why managing development from your phone today is almost as effective as from a computer.
 
 **Free up time for life.** When you can move a project forward anytime and anywhere, you can build a better daily routine — leaving more time for family and yourself.
 
