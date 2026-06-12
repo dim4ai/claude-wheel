@@ -271,6 +271,8 @@ export default function VoiceScreen() {
   const [sessionsList, setSessionsList]     = useState<{name: string; dir: string; running: boolean}[]>([]);
   const [newSessionName, setNewSessionName] = useState('');
   const [newSessionDir, setNewSessionDir]   = useState('');
+  const [renameSession, setRenameSession]   = useState<string | null>(null);
+  const [renameInput, setRenameInput]       = useState('');
   const [dirEdited, setDirEdited]           = useState(false);
   const [sessionError, setSessionError]     = useState('');
   const [projectMode, setProjectMode]       = useState(false);
@@ -290,6 +292,7 @@ export default function VoiceScreen() {
   const [settingsReady, setSettingsReady] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [serverOnline, setServerOnline]   = useState<boolean | null>(null);
+  const [serverVersionMismatch, setServerVersionMismatch] = useState(false);
   const healthFailCount = useRef(0);
   const [speechThreshold, setSpeechThreshold] = useState(SPEECH_THRESHOLD);
   const [silenceDuration, setSilenceDuration] = useState(SILENCE_DURATION);
@@ -591,6 +594,8 @@ export default function VoiceScreen() {
       if (r.ok) {
         healthFailCount.current = 0;
         setServerOnline(true);
+        const data = await r.json().catch(() => ({}));
+        setServerVersionMismatch(!!data.version && data.version !== APP_VERSION);
       } else {
         healthFailCount.current += 1;
         if (healthFailCount.current >= 2) setServerOnline(false);
@@ -675,6 +680,21 @@ export default function VoiceScreen() {
     } else {
       doSwitch();
     }
+  }
+
+  async function doRenameSession(oldName: string, newName: string) {
+    try {
+      await fetch(`${serverUrl}/dispatch?action=rename&session=${encodeURIComponent(oldName)}&new_name=${encodeURIComponent(newName)}`, {
+        method: 'POST', headers: apiHeaders(),
+      });
+      if (oldName === currentSession) {
+        setCurrentSession(newName);
+        AsyncStorage.setItem(STORAGE_KEYS.currentSession, encrypt(newName)).catch(() => {});
+      }
+      await loadSessions();
+    } catch {}
+    setRenameSession(null);
+    setRenameInput('');
   }
 
   async function stopSession(name: string) {
@@ -1267,7 +1287,7 @@ export default function VoiceScreen() {
             <TouchableOpacity style={styles.settingsBtn} onPress={() => setSettingsOpen(true)}>
               <View style={styles.settingsBtnRow}>
                 <View style={[styles.onlineDot, {
-                  backgroundColor: serverOnline === null ? '#888' : serverOnline ? '#4AE27A' : '#E24A4A'
+                  backgroundColor: serverOnline === null ? '#888' : serverVersionMismatch ? '#E2A44A' : serverOnline ? '#4AE27A' : '#E24A4A'
                 }]} />
                 <Text style={styles.settingsBtnText}>⚙️</Text>
               </View>
@@ -1566,6 +1586,34 @@ export default function VoiceScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* Rename Session Modal */}
+      <Modal visible={renameSession !== null} transparent animationType="fade" onRequestClose={() => { setRenameSession(null); setRenameInput(''); }}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalSheet, { padding: 24 }]}>
+            <Text style={styles.modalTitle}>Rename session</Text>
+            <TextInput
+              style={styles.input}
+              value={renameInput}
+              onChangeText={setRenameInput}
+              autoFocus
+              autoCapitalize="none"
+              placeholder="New name"
+              placeholderTextColor="#555"
+            />
+            <TouchableOpacity
+              style={[styles.pinBtn, (!renameInput.trim() || renameInput.trim() === renameSession) && { opacity: 0.4 }]}
+              onPress={() => doRenameSession(renameSession!, renameInput.trim())}
+              disabled={!renameInput.trim() || renameInput.trim() === renameSession}
+            >
+              <Text style={styles.pinBtnText}>Rename</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.modalClose, { marginTop: 8 }]} onPress={() => { setRenameSession(null); setRenameInput(''); }}>
+              <Text style={styles.modalCloseText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* Sessions Modal */}
       <Modal visible={sessionsOpen} transparent animationType="slide" onRequestClose={() => setSessionsOpen(false)}>
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
@@ -1575,7 +1623,7 @@ export default function VoiceScreen() {
             </TouchableOpacity>
             {sessionsExpanded && sessionsList.map(s => (
               <View key={s.name} style={styles.sessionRow}>
-                <TouchableOpacity style={{ flex: 1 }} onPress={() => switchSession(s.name)}>
+                <TouchableOpacity style={{ flex: 1 }} onPress={() => switchSession(s.name)} onLongPress={() => { setRenameSession(s.name); setRenameInput(s.name); }}>
                   <Text style={[styles.sessionName, s.name === currentSession && styles.sessionActive]}>
                     {s.name === currentSession ? '▶ ' : '   '}{s.name}
                   </Text>

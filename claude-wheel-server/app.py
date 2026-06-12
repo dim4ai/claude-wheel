@@ -318,7 +318,7 @@ def _trust_session(name: str, path: str):
     subprocess.run(["tmux", "kill-session", "-t", name], capture_output=True)
 
 @app.post("/dispatch")
-async def dispatch(action: str = Query(...), session: str = Query(None), dir: str = Query(None), project_mode: str = Query(None), _=Depends(verify_key)):
+async def dispatch(action: str = Query(...), session: str = Query(None), dir: str = Query(None), project_mode: str = Query(None), new_name: str = Query(None), _=Depends(verify_key)):
     """Manage Claude tmux sessions."""
     sessions_conf = load_sessions()
 
@@ -418,6 +418,38 @@ async def dispatch(action: str = Query(...), session: str = Query(None), dir: st
                     f.write(f"{session}: {work_dir}\n")
             print(f"[dispatch] created: {session}", flush=True)
             return {"ok": True, "session": session}
+
+    if action == "rename":
+        if not session:
+            raise HTTPException(status_code=400, detail="session required")
+        new_name = (new_name or "").strip().lower()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="new_name required")
+        if session not in sessions_conf:
+            raise HTTPException(status_code=404, detail=f"Session '{session}' not found")
+        if new_name in sessions_conf:
+            raise HTTPException(status_code=409, detail=f"Session '{new_name}' already exists")
+        work_dir = sessions_conf[session]
+        # rename tmux session if running
+        if is_running(session):
+            subprocess.run(["tmux", "rename-session", "-t", session, new_name], capture_output=True)
+        # update sessions.conf
+        async with sessions_conf_lock:
+            try:
+                with open(SESSIONS_CONF, "r") as f:
+                    lines = f.readlines()
+                with open(SESSIONS_CONF, "w") as f:
+                    for line in lines:
+                        if line.startswith(f"{session}:") or line.startswith(f"{session} :"):
+                            f.write(f"{new_name}: {work_dir}\n")
+                        else:
+                            f.write(line)
+            except FileNotFoundError:
+                pass
+        if session in last_activity:
+            last_activity[new_name] = last_activity.pop(session)
+        print(f"[dispatch] renamed: {session} → {new_name}", flush=True)
+        return {"ok": True, "session": new_name}
 
     if action == "close":
         if not session:
@@ -589,6 +621,8 @@ async def startup():
 
 # ── Health check ────────────────────────────────────────────────────────────
 
+SERVER_VERSION = "1.1.2"
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "stt": WHISPER_MODEL, "tts": "edge-tts"}
+    return {"status": "ok", "version": SERVER_VERSION, "stt": WHISPER_MODEL, "tts": "edge-tts"}
