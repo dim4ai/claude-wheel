@@ -1641,7 +1641,7 @@ export default function VoiceScreen() {
               shellSessionsList.length === 0
                 ? <Text style={[styles.sessionDir, { paddingHorizontal: 16, paddingVertical: 8 }]}>No shell sessions</Text>
                 : shellSessionsList.map(s => (
-                  <View key={s.name} style={styles.sessionRow}>
+                  <View key={s.name} style={styles.shellSessionRow}>
                     <TouchableOpacity style={{ flex: 1 }} onPress={() => {
                       setOpenShellSessions(prev => {
                         if (prev.includes(s.name)) return prev;
@@ -1656,8 +1656,7 @@ export default function VoiceScreen() {
                         setCurrentPageIndex(idx);
                       }, 100);
                     }}>
-                      <Text style={styles.sessionName}>   {s.name}</Text>
-                      <Text style={styles.sessionDir}>{s.running ? '🟢 running' : '⚪ stopped'}</Text>
+                      <Text style={styles.sessionName}>🟢 {s.name}</Text>
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => killShellSession(s.name)} style={styles.sessionCloseBtn}>
                       <Text style={styles.sessionCloseText}>✕</Text>
@@ -2035,6 +2034,7 @@ const styles = StyleSheet.create({
   modalClose:         { backgroundColor: '#2a2a4e', borderRadius: 10, padding: 14, alignItems: 'center', marginTop: 8, marginBottom: 24 },
   modalCloseText:     { color: '#fff', fontSize: 16 },
   sessionRow:         { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#2a2a4e' },
+  shellSessionRow:    { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: '#2a2a4e' },
   sessionName:        { color: '#fff', fontSize: 16 },
   sessionActive:      { color: '#4AE27A', fontWeight: 'bold' },
   sessionDir:         { color: '#888', fontSize: 12, marginTop: 2 },
