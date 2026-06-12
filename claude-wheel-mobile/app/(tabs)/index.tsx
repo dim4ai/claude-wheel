@@ -24,7 +24,7 @@ import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const APP_VERSION = '1.1.1';
+const APP_VERSION = '1.1.2';
 const SPEECH_THRESHOLD = -25;
 const SILENCE_DURATION = 2500;
 const MAX_MESSAGES = 100;
@@ -212,6 +212,7 @@ export default function VoiceScreen() {
   const [terminalOpen, setTerminalOpen]     = useState(false);
   const [screenLines, setScreenLines]       = useState<string[]>([]);
   const terminalScrollRef  = useRef<any>(null);
+  const terminalSavedOffset = useRef<number | null>(null);
   const terminalAtBottom   = useRef(true);
   const [headerH,        setHeaderH]        = useState(80);
   const [terminalToggleH, setTerminalToggleH] = useState(36);
@@ -259,6 +260,7 @@ export default function VoiceScreen() {
   const shellKeysScrollRefs = useRef<{[name: string]: ScrollView | null}>({});
   const shellKeysScrolledRef = useRef<{[name: string]: boolean}>({});
   const shellLineCounts = useRef<{[name: string]: number}>({});
+  const shellAutoScroll = useRef<{[name: string]: boolean}>({});
   const shellKeyboardRefs = useRef<{[name: string]: TextInput | null}>({});
   const shellPrevInputRef = useRef<{[name: string]: string}>({});
   const [shellModifiers, setShellModifiers] = useState<{[name: string]: {ctrl: boolean, alt: boolean, shift: boolean}}>({});
@@ -286,6 +288,7 @@ export default function VoiceScreen() {
   const [groqApiKey, setGroqApiKey]       = useState('');
   const [projectsDir, setProjectsDir]     = useState('');
   const [settingsReady, setSettingsReady] = useState(false);
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [serverOnline, setServerOnline]   = useState<boolean | null>(null);
   const healthFailCount = useRef(0);
   const [speechThreshold, setSpeechThreshold] = useState(SPEECH_THRESHOLD);
@@ -298,7 +301,8 @@ export default function VoiceScreen() {
       setKeyboardVisible(true);
       keyboardVisibleRef.current = true;
       const shellName = openShellSessionsRef.current[currentPageIndexRef.current - 1];
-      if (shellName) setTimeout(() => shellTerminalRefs.current[shellName]?.scrollToEnd({ animated: true }), 300);
+      if (shellName && shellAutoScroll.current[shellName] !== false) setTimeout(() => shellTerminalRefs.current[shellName]?.scrollToEnd({ animated: true }), 300);
+      if (!shellName && terminalOpen) setTimeout(() => { terminalAtBottom.current = true; terminalScrollRef.current?.scrollToEnd({ animated: true }); }, 300);
     });
     const hide = Keyboard.addListener('keyboardDidHide', () => {
       setKeyboardVisible(false);
@@ -533,14 +537,7 @@ export default function VoiceScreen() {
       .then(data => {
         const latest = (data.tag_name ?? '').replace(/^v/, '');
         if (latest && latest !== APP_VERSION) {
-          Alert.alert(
-            'Update available',
-            `New version ${latest} is available (current: ${APP_VERSION})`,
-            [
-              { text: 'Download', onPress: () => Linking.openURL('https://github.com/dim4ai/claude-wheel/releases/latest') },
-              { text: 'Later', style: 'cancel' },
-            ]
-          );
+          setUpdateVersion(latest);
         }
       })
       .catch(() => {});
@@ -638,7 +635,7 @@ export default function VoiceScreen() {
         headers: apiHeaders(),
       });
       const data = await r.json();
-      if (data.sessions) setSessionsList(data.sessions);
+      if (data.sessions) setSessionsList([...data.sessions].sort((a: any, b: any) => a.name.localeCompare(b.name)));
     } catch {}
   }
 
@@ -648,7 +645,7 @@ export default function VoiceScreen() {
         method: 'POST', headers: apiHeaders(),
       });
       const data = await r.json();
-      if (data.sessions) setSessionsList(data.sessions);
+      if (data.sessions) setSessionsList([...data.sessions].sort((a: any, b: any) => a.name.localeCompare(b.name)));
     } catch {}
     try {
       const r = await fetch(`${serverUrl}/shell-sessions`, { headers: apiHeaders() });
@@ -835,7 +832,7 @@ export default function VoiceScreen() {
         }
         const data = await r.json();
         setShellScreens(prev => ({ ...prev, [shellName]: (data.screen ?? '').trimEnd() }));
-        if (keyboardVisibleRef.current) {
+        if (keyboardVisibleRef.current && shellAutoScroll.current[shellName] !== false) {
           setTimeout(() => shellTerminalRefs.current[shellName]?.scrollToEnd({ animated: false }), 50);
         }
       } catch {}
@@ -863,7 +860,6 @@ export default function VoiceScreen() {
 
   function toggleTerminal() {
     if (!terminalOpen) {
-      terminalAtBottom.current = true;
       fetchScreen();
       screenInterval.current = setInterval(fetchScreen, 2000);
     } else {
@@ -1210,6 +1206,14 @@ export default function VoiceScreen() {
     const isSetup = pinMode === 'setup';
     return (
       <KeyboardAvoidingView style={styles.pinScreen} behavior="padding">
+        {updateVersion && (
+          <TouchableOpacity
+            onPress={() => Linking.openURL('https://github.com/dim4ai/claude-wheel/releases/latest')}
+            style={{ marginBottom: 32, borderWidth: 1, borderColor: '#4AE27A', borderRadius: 8, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#1a2a1a' }}
+          >
+            <Text style={{ color: '#4AE27A', fontSize: 13, textAlign: 'center' }}>v{updateVersion} available — tap to download</Text>
+          </TouchableOpacity>
+        )}
         <Text style={styles.pinTitle}>{isSetup ? 'Set password' : 'Enter password'}</Text>
         <Text style={styles.pinSubtitle}>{isSetup ? 'Protects access to the app and connection data' : 'Claude Wheel'}</Text>
         <View style={styles.pinInputRow}>
@@ -1255,19 +1259,21 @@ export default function VoiceScreen() {
             : <Text style={styles.session}>tap to select session ▾</Text>
           }
         </TouchableOpacity>
-        <Text style={styles.clockText}>{currentTime}</Text>
         <View style={styles.settingsBtnRow}>
           <TouchableOpacity style={styles.settingsBtn} onPress={() => { setTtsEnabled(v => { const next = !v; saveSettings({ ttsEnabled: next }); return next; }); }}>
             <Text style={styles.settingsBtnText}>{ttsEnabled ? '🔊' : '🔇'}</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.settingsBtn} onPress={() => setSettingsOpen(true)}>
-            <View style={styles.settingsBtnRow}>
-              <View style={[styles.onlineDot, {
-                backgroundColor: serverOnline === null ? '#888' : serverOnline ? '#4AE27A' : '#E24A4A'
-              }]} />
-              <Text style={styles.settingsBtnText}>⚙️</Text>
-            </View>
-          </TouchableOpacity>
+          <View style={{ alignItems: 'center' }}>
+            <TouchableOpacity style={styles.settingsBtn} onPress={() => setSettingsOpen(true)}>
+              <View style={styles.settingsBtnRow}>
+                <View style={[styles.onlineDot, {
+                  backgroundColor: serverOnline === null ? '#888' : serverOnline ? '#4AE27A' : '#E24A4A'
+                }]} />
+                <Text style={styles.settingsBtnText}>⚙️</Text>
+              </View>
+            </TouchableOpacity>
+            <Text style={styles.clockText}>{currentTime}</Text>
+          </View>
         </View>
       </View>
 
@@ -1717,6 +1723,11 @@ export default function VoiceScreen() {
           const idx = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
           currentPageIndexRef.current = idx;
           setCurrentPageIndex(idx);
+          const shellName = openShellSessionsRef.current[idx - 1];
+          if (shellName) {
+            if (shellAutoScroll.current[shellName] !== false) setTimeout(() => shellTerminalRefs.current[shellName]?.scrollToEnd({ animated: false }), 100);
+            setTimeout(() => shellKeysScrollRefs.current[shellName]?.scrollToEnd({ animated: false }), 100);
+          }
         }}
       >
         {/* Page 0: Claude chat */}
@@ -1753,6 +1764,17 @@ export default function VoiceScreen() {
                   terminalLines * (fontSize + 3),
                   screenHeight - insets.top - insets.bottom - headerH - terminalToggleH - terminalKeysH - belowTerminalH - 24
                 )}]}
+                onScroll={({ nativeEvent: e }) => {
+                  terminalSavedOffset.current = e.contentOffset.y;
+                }}
+                scrollEventThrottle={100}
+                onContentSizeChange={() => {
+                  if (terminalAtBottom.current) {
+                    terminalScrollRef.current?.scrollToEnd({ animated: false });
+                  } else if (terminalSavedOffset.current !== null) {
+                    terminalScrollRef.current?.scrollTo({ y: terminalSavedOffset.current, animated: false });
+                  }
+                }}
                 onScrollBeginDrag={() => { terminalAtBottom.current = false; }}
                 onScrollEndDrag={({ nativeEvent: e }) => {
                   terminalAtBottom.current = e.layoutMeasurement.height + e.contentOffset.y >= e.contentSize.height - 20;
@@ -1763,18 +1785,24 @@ export default function VoiceScreen() {
               >
                 <Text style={[styles.terminalText, { fontSize }]}>{screenLines.join('\n')}</Text>
               </ScrollView>
-              <View style={styles.terminalKeys} onLayout={e => setTerminalKeysH(e.nativeEvent.layout.height)}>
-                <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('Escape')}>
-                  <Text style={styles.keyText}>Esc</Text>
+              <View style={styles.terminalKeysFit} onLayout={e => setTerminalKeysH(e.nativeEvent.layout.height)}>
+                <TouchableOpacity style={styles.terminalKeyFitBtn} onPress={() => sendKey('Escape')}>
+                  <Text style={styles.terminalKeyFitText}>Esc</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('Up')}>
-                  <Text style={styles.keyText}>↑</Text>
+                <TouchableOpacity style={styles.terminalKeyFitBtn} onPress={() => {
+                  terminalAtBottom.current = true;
+                  terminalScrollRef.current?.scrollToEnd({ animated: true });
+                }}>
+                  <Text style={styles.terminalKeyFitText}>⏬︎</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('Down')}>
-                  <Text style={styles.keyText}>↓</Text>
+                <TouchableOpacity style={styles.terminalKeyFitBtn} onPress={() => sendKey('Up')}>
+                  <Text style={styles.terminalKeyFitText}>↑</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.keyBtn} onPress={() => sendKey('Enter')}>
-                  <Text style={styles.keyText}>↵</Text>
+                <TouchableOpacity style={styles.terminalKeyFitBtn} onPress={() => sendKey('Down')}>
+                  <Text style={styles.terminalKeyFitText}>↓</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.terminalKeyFitBtn} onPress={() => sendKey('Enter')}>
+                  <Text style={styles.terminalKeyFitText}>↵</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1785,7 +1813,13 @@ export default function VoiceScreen() {
               <TextInput
                 style={[styles.textInputField, { fontSize }]}
                 value={textInput}
-                onChangeText={setTextInput}
+                onChangeText={t => {
+                  setTextInput(t);
+                  if (t && terminalOpen) {
+                    terminalAtBottom.current = true;
+                    terminalScrollRef.current?.scrollToEnd({ animated: true });
+                  }
+                }}
                 placeholder="Type a message..."
                 placeholderTextColor="#555"
                 multiline
@@ -1853,16 +1887,26 @@ export default function VoiceScreen() {
               ref={r => { shellTerminalRefs.current[name] = r; }}
               style={[styles.shellTerminal, { flex: 1 }]}
               contentContainerStyle={{ padding: 8, paddingBottom: fontSize * 1.5 }}
-              onContentSizeChange={() => shellTerminalRefs.current[name]?.scrollToEnd({ animated: false })}
-              onScrollEndDrag={({ nativeEvent }) => {
-                if (nativeEvent.contentOffset.y <= 0 && (shellLineCounts.current[name] ?? 80) < 2000) {
-                  shellLineCounts.current[name] = 2000;
-                  fetch(`${serverUrl}/shell-screen?session=${encodeURIComponent(name)}&count=2000`, {
-                    headers: apiHeaders(),
-                  }).then(r => r.json()).then(data => {
-                    setShellScreens(prev => ({ ...prev, [name]: (data.screen ?? '').trimEnd() }));
-                  }).catch(() => {});
+              onContentSizeChange={() => { if (shellAutoScroll.current[name] !== false) shellTerminalRefs.current[name]?.scrollToEnd({ animated: false }); }}
+              onScrollEndDrag={({ nativeEvent: e }) => {
+                const atBottom = e.contentOffset.y + e.layoutMeasurement.height >= e.contentSize.height - 20;
+                if (atBottom) {
+                  shellAutoScroll.current[name] = true;
+                } else {
+                  shellAutoScroll.current[name] = false;
+                  if (e.contentOffset.y <= 0 && (shellLineCounts.current[name] ?? 80) < 2000) {
+                    shellLineCounts.current[name] = 2000;
+                    fetch(`${serverUrl}/shell-screen?session=${encodeURIComponent(name)}&count=2000`, {
+                      headers: apiHeaders(),
+                    }).then(r => r.json()).then(data => {
+                      setShellScreens(prev => ({ ...prev, [name]: (data.screen ?? '').trimEnd() }));
+                    }).catch(() => {});
+                  }
                 }
+              }}
+              onMomentumScrollEnd={({ nativeEvent: e }) => {
+                const atBottom = e.contentOffset.y + e.layoutMeasurement.height >= e.contentSize.height - 20;
+                if (atBottom) shellAutoScroll.current[name] = true;
               }}
             >
               <Text selectable style={[styles.terminalText, { fontSize }]}>{shellScreens[name] ?? ''}</Text>
@@ -1883,7 +1927,7 @@ export default function VoiceScreen() {
                 }
               }}
             >
-              {(['Alt', 'Ctrl', 'Shift', '↑', '↓', '↵', 'Tab'] as const).map(label => {
+              {(['Alt', 'Ctrl', 'Shift', '↑', '↓', '↵', '⏬︎', 'Tab'] as const).map(label => {
                 const mods = shellModifiers[name] ?? { ctrl: false, alt: false, shift: false };
                 const isModifier = label === 'Ctrl' || label === 'Alt' || label === 'Shift';
                 const isActive = (label === 'Ctrl' && mods.ctrl) || (label === 'Alt' && mods.alt) || (label === 'Shift' && mods.shift);
@@ -1898,6 +1942,9 @@ export default function VoiceScreen() {
                       shellKeyboardRefs.current[name]?.focus();
                     } else if (label === '↵') {
                       sendShellInput(name, '', 'Enter');
+                    } else if (label === '⏬︎') {
+                      shellAutoScroll.current[name] = true;
+                      shellTerminalRefs.current[name]?.scrollToEnd({ animated: true });
                     } else {
                       sendShellInput(name, '', label === '↑' ? 'Up' : label === '↓' ? 'Down' : 'Tab');
                     }
@@ -2041,8 +2088,11 @@ const styles = StyleSheet.create({
   terminalScroll:     { padding: 8 },
   terminalText:       { color: '#4AE27A', fontSize: 11, fontFamily: 'monospace' },
   terminalKeys:       { flexDirection: 'row', gap: 16, paddingHorizontal: 8 },
+  terminalKeysFit:    { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 8 },
   keyBtn:             { backgroundColor: '#2a2a4e', paddingHorizontal: 24, paddingVertical: 4, borderRadius: 8 },
   keyText:            { color: '#fff', fontSize: 20 },
+  terminalKeyFitBtn:  { backgroundColor: '#2a2a4e', paddingHorizontal: 16, paddingVertical: 4, borderRadius: 8 },
+  terminalKeyFitText: { color: '#fff', fontSize: 18 },
   shellPageHeader:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#2a2a4e' },
   shellPageTitle:     { color: '#4AE27A', fontSize: 16, fontWeight: 'bold', fontFamily: 'monospace' },
   shellPageClose:     { color: '#8B3A3A', fontSize: 20, paddingHorizontal: 8 },
