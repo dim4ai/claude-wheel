@@ -541,7 +541,16 @@ def shell_screen(session: str = Query(...), start: int = Query(0), count: int = 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise HTTPException(status_code=404, detail=f"Session '{session}' not found")
-    return {"screen": result.stdout, "start": start, "count": count}
+    cursor_result = subprocess.run(
+        ["tmux", "display-message", "-t", session, "-p", "#{cursor_x} #{cursor_y} #{pane_height}"],
+        capture_output=True, text=True
+    )
+    cursor_x, cursor_y, pane_height = None, None, None
+    if cursor_result.returncode == 0:
+        parts = cursor_result.stdout.strip().split()
+        if len(parts) == 3:
+            cursor_x, cursor_y, pane_height = int(parts[0]), int(parts[1]), int(parts[2])
+    return {"screen": result.stdout, "start": start, "count": count, "cursor_x": cursor_x, "cursor_y": cursor_y, "pane_height": pane_height}
 
 
 @app.post("/shell-input")

@@ -26,6 +26,11 @@ import * as Clipboard from 'expo-clipboard';
 // ── Constants ────────────────────────────────────────────────────────────────
 const APP_VERSION = '1.1.2';
 const MIN_SERVER_VERSION = '1.1.2';
+const semverLt = (a: string, b: string) => {
+  const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) { if ((pa[i]??0) < (pb[i]??0)) return true; if ((pa[i]??0) > (pb[i]??0)) return false; }
+  return false;
+};
 const SPEECH_THRESHOLD = -25;
 const SILENCE_DURATION = 2500;
 const MAX_MESSAGES = 100;
@@ -254,6 +259,7 @@ export default function VoiceScreen() {
   const [creatingShellSession, setCreatingShellSession] = useState(false);
   const [openShellSessions, setOpenShellSessions] = useState<string[]>([]);
   const [shellScreens, setShellScreens] = useState<{[name: string]: string}>({});
+  const [shellCursors, setShellCursors] = useState<{[name: string]: {x: number, y: number, paneHeight: number} | null}>({});
   const [shellInputs, setShellInputs] = useState<{[name: string]: string}>({});
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const pagerRef = useRef<ScrollView>(null);
@@ -596,7 +602,7 @@ export default function VoiceScreen() {
         healthFailCount.current = 0;
         setServerOnline(true);
         const data = await r.json().catch(() => ({}));
-        setServerVersionMismatch(!!data.version && data.version < MIN_SERVER_VERSION);
+        setServerVersionMismatch(!!data.version && semverLt(data.version, MIN_SERVER_VERSION));
       } else {
         healthFailCount.current += 1;
         if (healthFailCount.current >= 2) setServerOnline(false);
@@ -776,11 +782,13 @@ export default function VoiceScreen() {
     const baseDir = projectsDir.trim();
     if (!baseDir) {
       setSessionError('Set the working directory in settings (General → Projects directory)');
+      setTimeout(() => setSessionError(''), 5000);
       return;
     }
     const dir = newSessionDir.trim();
     if (dir && !dir.startsWith(baseDir)) {
       setSessionError(`Directory must be inside ${baseDir}`);
+      setTimeout(() => setSessionError(''), 5000);
       return;
     }
     setCreatingSession(true);
@@ -795,7 +803,7 @@ export default function VoiceScreen() {
       setDirEdited(false);
       setSessionError('');
       await loadSessions();
-    } catch (e) { setSessionError('Error creating session: ' + e); }
+    } catch (e) { setSessionError('Error creating session: ' + e); setTimeout(() => setSessionError(''), 5000); }
     finally { setCreatingSession(false); }
   }
 
@@ -853,6 +861,9 @@ export default function VoiceScreen() {
         }
         const data = await r.json();
         setShellScreens(prev => ({ ...prev, [shellName]: (data.screen ?? '').trimEnd() }));
+        if (data.cursor_x != null && data.cursor_y != null && data.pane_height != null) {
+          setShellCursors(prev => ({ ...prev, [shellName]: { x: data.cursor_x, y: data.cursor_y, paneHeight: data.pane_height } }));
+        }
         if (keyboardVisibleRef.current && shellAutoScroll.current[shellName] !== false) {
           setTimeout(() => shellTerminalRefs.current[shellName]?.scrollToEnd({ animated: false }), 50);
         }
@@ -1957,12 +1968,36 @@ export default function VoiceScreen() {
                 if (atBottom) shellAutoScroll.current[name] = true;
               }}
             >
-              <Text selectable style={[styles.terminalText, { fontSize }]}>{shellScreens[name] ?? ''}</Text>
+              {(() => {
+                const screen = shellScreens[name] ?? '';
+                const cursor = shellCursors[name];
+                if (!cursor) return <Text selectable style={[styles.terminalText, { fontSize }]}>{screen}</Text>;
+                const lines = screen.split('\n');
+                const offset = Math.max(0, lines.length - cursor.paneHeight);
+                const cy = offset + cursor.y;
+                const before = lines.slice(0, cy).join('\n') + (cy > 0 ? '\n' : '');
+                const curLine = lines[cy] ?? '';
+                const cx = cursor.x;
+                const lineBeforeCursor = curLine.slice(0, cx);
+                const curChar = curLine[cx] ?? ' ';
+                const lineAfterCursor = curLine.slice(cx + 1);
+                const after = cy < lines.length - 1 ? '\n' + lines.slice(cy + 1).join('\n') : '';
+                return (
+                  <Text selectable style={[styles.terminalText, { fontSize }]}>
+                    {before}
+                    {lineBeforeCursor}
+                    <Text style={{ backgroundColor: '#4a9eff', color: '#000' }}>{curChar}</Text>
+                    {lineAfterCursor}
+                    {after}
+                  </Text>
+                );
+              })()}
             </ScrollView>
 
             {/* Special keys row */}
             <ScrollView
               horizontal
+              nestedScrollEnabled
               showsHorizontalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
               style={{ flexGrow: 0 }}
@@ -1975,7 +2010,7 @@ export default function VoiceScreen() {
                 }
               }}
             >
-              {(['Alt', 'Ctrl', 'Shift', '↑', '↓', '↵', '⏬︎', 'Tab'] as const).map(label => {
+              {(['Alt', 'Ctrl', 'Shift', '↓', '↑', '←', '→', '↵', '⏬︎', 'Tab'] as const).map(label => {
                 const mods = shellModifiers[name] ?? { ctrl: false, alt: false, shift: false };
                 const isModifier = label === 'Ctrl' || label === 'Alt' || label === 'Shift';
                 const isActive = (label === 'Ctrl' && mods.ctrl) || (label === 'Alt' && mods.alt) || (label === 'Shift' && mods.shift);
@@ -1994,7 +2029,7 @@ export default function VoiceScreen() {
                       shellAutoScroll.current[name] = true;
                       shellTerminalRefs.current[name]?.scrollToEnd({ animated: true });
                     } else {
-                      sendShellInput(name, '', label === '↑' ? 'Up' : label === '↓' ? 'Down' : 'Tab');
+                      sendShellInput(name, '', label === '↑' ? 'Up' : label === '↓' ? 'Down' : label === '←' ? 'Left' : label === '→' ? 'Right' : 'Tab');
                     }
                   }}>
                     <Text style={[styles.keyText, { fontSize: 14 }]}>{label}</Text>
