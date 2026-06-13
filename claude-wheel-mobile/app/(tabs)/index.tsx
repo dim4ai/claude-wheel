@@ -25,6 +25,7 @@ import * as Clipboard from 'expo-clipboard';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const APP_VERSION = '1.1.2';
+const MIN_SERVER_VERSION = '1.1.2';
 const SPEECH_THRESHOLD = -25;
 const SILENCE_DURATION = 2500;
 const MAX_MESSAGES = 100;
@@ -595,7 +596,7 @@ export default function VoiceScreen() {
         healthFailCount.current = 0;
         setServerOnline(true);
         const data = await r.json().catch(() => ({}));
-        setServerVersionMismatch(!!data.version && data.version !== APP_VERSION);
+        setServerVersionMismatch(!!data.version && data.version < MIN_SERVER_VERSION);
       } else {
         healthFailCount.current += 1;
         if (healthFailCount.current >= 2) setServerOnline(false);
