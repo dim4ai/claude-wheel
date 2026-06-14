@@ -1600,7 +1600,7 @@ export default function VoiceScreen() {
 
       {/* Rename Session Modal */}
       <Modal visible={renameSession !== null} transparent animationType="fade" onRequestClose={() => { setRenameSession(null); setRenameInput(''); }}>
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={[styles.modalSheet, { padding: 24 }]}>
             <Text style={styles.modalTitle}>Rename session</Text>
             <TextInput
@@ -1623,7 +1623,7 @@ export default function VoiceScreen() {
               <Text style={styles.modalCloseText}>Cancel</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Sessions Modal */}
