@@ -33,7 +33,7 @@ const semverLt = (a: string, b: string) => {
   return false;
 };
 const WAKE_WORD = 'алло привет';
-const END_WORD = 'алло пока';
+const END_WORD = 'покедово';
 const MAX_MESSAGES = 100;
 const TERMINAL_LINES = 10;      // default lines per page in terminal
 
@@ -1240,7 +1240,7 @@ export default function VoiceScreen() {
   const buttonLabel = anchorVadMode ? {
     idle:       '⏸ VAD paused',
     listening:  '👂 Say "алло привет"...',
-    recording:  '🔴 Say "алло пока" to send',
+    recording:  '🔴 Say "покедово" to send',
     processing: '⏳ Processing...',
     speaking:   '🔊 Speaking...',
   }[status] : {
