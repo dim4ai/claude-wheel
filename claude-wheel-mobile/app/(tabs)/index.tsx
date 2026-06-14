@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useKeepAwake } from 'expo-keep-awake';
-import { StyleSheet, TouchableOpacity, View, Text, ActivityIndicator, ScrollView, Switch, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, Keyboard, PanResponder, useWindowDimensions, Linking } from 'react-native';
+import { StyleSheet, TouchableOpacity, View, Text, ActivityIndicator, ScrollView, Switch, Modal, TextInput, Alert, KeyboardAvoidingView, Platform, Keyboard, useWindowDimensions, Linking } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Crypto from 'expo-crypto';
 import CryptoJS from 'crypto-js';
@@ -19,6 +19,7 @@ import CryptoJS from 'crypto-js';
 };
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
+import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
@@ -31,8 +32,8 @@ const semverLt = (a: string, b: string) => {
   for (let i = 0; i < 3; i++) { if ((pa[i]??0) < (pb[i]??0)) return true; if ((pa[i]??0) > (pb[i]??0)) return false; }
   return false;
 };
-const SPEECH_THRESHOLD = -25;
-const SILENCE_DURATION = 2500;
+const WAKE_WORD = 'алло привет';
+const END_WORD = 'алло пока';
 const MAX_MESSAGES = 100;
 const TERMINAL_LINES = 10;      // default lines per page in terminal
 
@@ -53,8 +54,7 @@ const STORAGE_KEYS = {
   projectsDir:     'setting_projects_dir',
   language:        'setting_language',
   ttsEnabled:      'setting_tts_enabled',
-  speechThreshold: 'setting_speech_threshold',
-  silenceDuration: 'setting_silence_duration',
+  anchorVadMode:   'setting_anchor_vad_mode',
   currentSession:  'setting_current_session',
   sessionLocking:  'setting_session_locking',
   hapticOnHang:    'setting_haptic_on_hang',
@@ -201,8 +201,8 @@ export default function VoiceScreen() {
     Alert.alert('Done', 'Password changed successfully');
   }
 
-  const [status, setStatus]     = useState<Status>('idle');
-  const [vadMode, setVadMode]   = useState(false);
+  const [status, setStatus]       = useState<Status>('idle');
+  const [anchorVadMode, setAnchorVadMode] = useState(false);
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [messages, setMessages] = useState<Message[]>([]);
   const [error, setError]       = useState('');
@@ -301,10 +301,6 @@ export default function VoiceScreen() {
   const [serverOnline, setServerOnline]   = useState<boolean | null>(null);
   const [serverVersionMismatch, setServerVersionMismatch] = useState(false);
   const healthFailCount = useRef(0);
-  const [speechThreshold, setSpeechThreshold] = useState(SPEECH_THRESHOLD);
-  const [silenceDuration, setSilenceDuration] = useState(SILENCE_DURATION);
-  const speechThresholdRef = useRef(SPEECH_THRESHOLD);
-  const silenceDurationRef = useRef(SILENCE_DURATION);
 
   useEffect(() => {
     const show = Keyboard.addListener('keyboardDidShow', () => {
@@ -483,15 +479,13 @@ export default function VoiceScreen() {
   useEffect(() => {
     if (pinMode !== 'unlocked') return;
     async function loadSettings() {
-      const [url, apiKey, groq, projDir, lang, tts, sThresh, sDur, haptic, gender, lockTimeoutVal, savedSession, sessionLockingVal, hapticOnHangVal, hangTimeoutVal, fontSizeVal, terminalLinesVal] = await Promise.all([
+      const [url, apiKey, groq, projDir, lang, tts, haptic, gender, lockTimeoutVal, savedSession, sessionLockingVal, hapticOnHangVal, hangTimeoutVal, fontSizeVal, terminalLinesVal, anchorVad] = await Promise.all([
         AsyncStorage.getItem(STORAGE_KEYS.serverUrl),
         AsyncStorage.getItem(STORAGE_KEYS.serverApiKey),
         AsyncStorage.getItem(STORAGE_KEYS.groqApiKey),
         AsyncStorage.getItem(STORAGE_KEYS.projectsDir),
         AsyncStorage.getItem(STORAGE_KEYS.language),
         AsyncStorage.getItem(STORAGE_KEYS.ttsEnabled),
-        AsyncStorage.getItem(STORAGE_KEYS.speechThreshold),
-        AsyncStorage.getItem(STORAGE_KEYS.silenceDuration),
         AsyncStorage.getItem(STORAGE_KEYS.hapticStyle),
         AsyncStorage.getItem(STORAGE_KEYS.voiceGender),
         AsyncStorage.getItem(STORAGE_KEYS.lockTimeout),
@@ -501,6 +495,7 @@ export default function VoiceScreen() {
         AsyncStorage.getItem(STORAGE_KEYS.hangTimeout),
         AsyncStorage.getItem(STORAGE_KEYS.fontSize),
         AsyncStorage.getItem(STORAGE_KEYS.terminalLines),
+        AsyncStorage.getItem(STORAGE_KEYS.anchorVadMode),
       ]);
       if (url)     setServerUrl(decrypt(url));
       if (apiKey)  setServerApiKey(decrypt(apiKey));
@@ -508,8 +503,6 @@ export default function VoiceScreen() {
       if (projDir) setProjectsDir(projDir.trim());
       if (lang)    setLanguage(lang);
       if (tts !== null) setTtsEnabled(tts === 'true');
-      if (sThresh !== null) { const v = parseFloat(sThresh); setSpeechThreshold(v); speechThresholdRef.current = v; }
-      if (sDur    !== null) { const v = parseInt(sDur);     setSilenceDuration(v);  silenceDurationRef.current = v; }
       if (haptic)           setHapticStyle(haptic);
       if (gender)           setVoiceGender(gender as 'female' | 'male');
       if (lockTimeoutVal !== null) setLockTimeout(parseInt(lockTimeoutVal) || 0);
@@ -519,6 +512,7 @@ export default function VoiceScreen() {
       if (hangTimeoutVal !== null)  setHangTimeout(parseInt(hangTimeoutVal) || 20);
       if (fontSizeVal !== null)     { const v = parseInt(fontSizeVal) || 15; setFontSize(v); setFontSizeText(String(v)); }
       if (terminalLinesVal !== null) { const v = parseInt(terminalLinesVal) || 10; setTerminalLines(v); setTerminalLinesText(String(v)); }
+      if (anchorVad === 'true') setAnchorVadMode(true);
 
       // Restore open shell sessions, verify they still exist
       const savedShell = await AsyncStorage.getItem(STORAGE_KEYS.openShellSessions);
@@ -573,21 +567,18 @@ export default function VoiceScreen() {
   async function saveSettings(updates: Partial<{
     serverUrl: string; serverApiKey: string; groqApiKey: string;
     projectsDir: string; language: string; ttsEnabled: boolean;
-    speechThreshold: number; silenceDuration: number; hapticStyle: string; voiceGender: string;
-    lockTimeout: number;
+    hapticStyle: string; voiceGender: string; lockTimeout: number;
   }>) {
     const pairs: [string, string][] = [];
-    if (updates.serverUrl       !== undefined) pairs.push([STORAGE_KEYS.serverUrl,       encrypt(updates.serverUrl)]);
-    if (updates.serverApiKey    !== undefined) pairs.push([STORAGE_KEYS.serverApiKey,    encrypt(updates.serverApiKey)]);
-    if (updates.groqApiKey      !== undefined) pairs.push([STORAGE_KEYS.groqApiKey,      encrypt(updates.groqApiKey)]);
-    if (updates.projectsDir     !== undefined) pairs.push([STORAGE_KEYS.projectsDir,     updates.projectsDir]);
-    if (updates.language        !== undefined) pairs.push([STORAGE_KEYS.language,        updates.language]);
-    if (updates.ttsEnabled      !== undefined) pairs.push([STORAGE_KEYS.ttsEnabled,      String(updates.ttsEnabled)]);
-    if (updates.speechThreshold !== undefined) pairs.push([STORAGE_KEYS.speechThreshold, String(updates.speechThreshold)]);
-    if (updates.silenceDuration !== undefined) pairs.push([STORAGE_KEYS.silenceDuration, String(updates.silenceDuration)]);
-    if (updates.hapticStyle     !== undefined) pairs.push([STORAGE_KEYS.hapticStyle,     updates.hapticStyle]);
-    if (updates.voiceGender     !== undefined) pairs.push([STORAGE_KEYS.voiceGender,     updates.voiceGender]);
-    if (updates.lockTimeout     !== undefined) pairs.push([STORAGE_KEYS.lockTimeout,     String(updates.lockTimeout)]);
+    if (updates.serverUrl    !== undefined) pairs.push([STORAGE_KEYS.serverUrl,    encrypt(updates.serverUrl)]);
+    if (updates.serverApiKey !== undefined) pairs.push([STORAGE_KEYS.serverApiKey, encrypt(updates.serverApiKey)]);
+    if (updates.groqApiKey   !== undefined) pairs.push([STORAGE_KEYS.groqApiKey,   encrypt(updates.groqApiKey)]);
+    if (updates.projectsDir  !== undefined) pairs.push([STORAGE_KEYS.projectsDir,  updates.projectsDir]);
+    if (updates.language     !== undefined) pairs.push([STORAGE_KEYS.language,     updates.language]);
+    if (updates.ttsEnabled   !== undefined) pairs.push([STORAGE_KEYS.ttsEnabled,   String(updates.ttsEnabled)]);
+    if (updates.hapticStyle  !== undefined) pairs.push([STORAGE_KEYS.hapticStyle,  updates.hapticStyle]);
+    if (updates.voiceGender  !== undefined) pairs.push([STORAGE_KEYS.voiceGender,  updates.voiceGender]);
+    if (updates.lockTimeout  !== undefined) pairs.push([STORAGE_KEYS.lockTimeout,  String(updates.lockTimeout)]);
     await AsyncStorage.multiSet(pairs);
   }
 
@@ -920,71 +911,17 @@ export default function VoiceScreen() {
     setError('');
   }
 
-  const [audioLevel, setAudioLevel] = useState<number | null>(null);
-  const meteringIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const calibRecordingRef = useRef<Audio.Recording | null>(null);
-  const calibIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
-  const levelBarWidth     = useRef(0);
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  const soundRef     = useRef<Audio.Sound | null>(null);
 
-  const thresholdPanResponder = useRef(PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onPanResponderGrant: (e) => {
-      const x = e.nativeEvent.locationX;
-      const db = Math.round(-60 + (x / levelBarWidth.current) * 60);
-      const clamped = Math.max(-60, Math.min(0, db));
-      setSpeechThreshold(clamped);
-      speechThresholdRef.current = clamped;
-    },
-    onPanResponderMove: (e) => {
-      const x = e.nativeEvent.locationX;
-      const db = Math.round(-60 + (x / levelBarWidth.current) * 60);
-      const clamped = Math.max(-60, Math.min(0, db));
-      setSpeechThreshold(clamped);
-      speechThresholdRef.current = clamped;
-    },
-    onPanResponderRelease: () => {
-      saveSettings({ speechThreshold: speechThresholdRef.current });
-    },
-  })).current;
+  // ── Anchor VAD refs ───────────────────────────────────────────────────────
+  const anchorVadActiveRef  = useRef(false);
+  const anchorPhaseRef      = useRef<'waiting' | 'recording' | 'transitioning'>('waiting');
+  const anchorStartTimeRef  = useRef(0);
+  const anchorLastSpeechRef = useRef(0);
+  const anchorAudioUriRef   = useRef<string | null>(null);
+  const anchorTimeoutRef    = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const recordingRef   = useRef<Audio.Recording | null>(null);
-  const soundRef       = useRef<Audio.Sound | null>(null);
-  const vadActiveRef   = useRef(false);
-  const speechStarted  = useRef(false);
-  const silenceStart   = useRef<number | null>(null);
-  const vadInterval    = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // ── Calibration (mic level preview in Settings) ───────────────────────────
-  async function startCalibration() {
-    try {
-      await Audio.requestPermissionsAsync();
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      const { recording } = await Audio.Recording.createAsync({
-        ...Audio.RecordingOptionsPresets.HIGH_QUALITY,
-        isMeteringEnabled: true,
-      });
-      calibRecordingRef.current = recording;
-      calibIntervalRef.current = setInterval(async () => {
-        if (!calibRecordingRef.current) return;
-        const s = await calibRecordingRef.current.getStatusAsync();
-        setAudioLevel((s as any).metering ?? null);
-      }, 100);
-    } catch {}
-  }
-
-  async function stopCalibration() {
-    if (calibIntervalRef.current) { clearInterval(calibIntervalRef.current); calibIntervalRef.current = null; }
-    if (calibRecordingRef.current) {
-      try { await calibRecordingRef.current.stopAndUnloadAsync(); } catch {}
-      calibRecordingRef.current = null;
-    }
-    setAudioLevel(null);
-  }
-
-  useEffect(() => {
-    if (settingsOpen && secAudio) startCalibration();
-    else stopCalibration();
-  }, [settingsOpen, secAudio]);
 
   // ── TTS ────────────────────────────────────────────────────────────────────
   async function speak(text: string): Promise<void> {
@@ -1028,8 +965,6 @@ export default function VoiceScreen() {
   async function sendRecording() {
     if (!recordingRef.current) return;
     cancelledRef.current = false;
-    if (meteringIntervalRef.current) { clearInterval(meteringIntervalRef.current); meteringIntervalRef.current = null; }
-    setAudioLevel(null);
     setStatus('processing');
 
     try {
@@ -1074,8 +1009,7 @@ export default function VoiceScreen() {
     } catch (e: any) {
       if (e?.name !== 'AbortError') showError('Error: ' + e);
     } finally {
-      if (vadActiveRef.current) startListening();
-      else setStatus('idle');
+      setStatus('idle');
     }
   }
 
@@ -1116,70 +1050,159 @@ export default function VoiceScreen() {
     await sendTextContent(text);
   }
 
-  // ── VAD ───────────────────────────────────────────────────────────────────
-  async function startListening() {
-    if (!vadActiveRef.current) return;
-    setError('');
+  // ── Anchor VAD ────────────────────────────────────────────────────────────
+  function startAnchorWaiting() {
+    if (!anchorVadActiveRef.current) return;
+    anchorPhaseRef.current = 'waiting';
+    anchorAudioUriRef.current = null;
+    setStatus('listening');
+    ExpoSpeechRecognitionModule.start({
+      lang: 'ru-RU',
+      continuous: true,
+      interimResults: true,
+      requiresOnDeviceRecognition: true,
+      contextualStrings: [WAKE_WORD],
+    });
+  }
+
+  function startAnchorRecording() {
+    if (!anchorVadActiveRef.current) return;
+    anchorPhaseRef.current = 'recording';
+    anchorAudioUriRef.current = null;
+    anchorStartTimeRef.current = Date.now();
+    anchorLastSpeechRef.current = Date.now();
+    setStatus('recording');
+    ExpoSpeechRecognitionModule.start({
+      lang: 'ru-RU',
+      continuous: true,
+      interimResults: true,
+      requiresOnDeviceRecognition: true,
+      contextualStrings: [END_WORD],
+      recordingOptions: { persist: true },
+    });
+  }
+
+  async function sendAnchorAudio(uri: string) {
+    cancelledRef.current = false;
+    setStatus('processing');
     try {
-      const { recording } = await Audio.Recording.createAsync({
-        ...Audio.RecordingOptionsPresets.HIGH_QUALITY,
-        isMeteringEnabled: true,
+      const formData = new FormData();
+      formData.append('audio', { uri, name: 'anchor.wav', type: 'audio/wav' } as any);
+      const abort = new AbortController();
+      abortControllerRef.current = abort;
+      const sttRes = await fetch(`${serverUrl}/stt?language=${language}`, {
+        method: 'POST',
+        headers: apiHeaders(),
+        body: formData,
+        signal: abort.signal,
       });
-      recordingRef.current = recording;
-      speechStarted.current = false;
-      silenceStart.current = null;
-      setStatus('listening');
-
-      vadInterval.current = setInterval(async () => {
-        if (!recordingRef.current || !vadActiveRef.current) return;
-        const s = await recordingRef.current.getStatusAsync();
-        const db = (s as any).metering ?? -160;
-        setAudioLevel(db);
-        if (db > speechThresholdRef.current) {
-          if (!speechStarted.current && hapticStyle !== 'none') {
-            const style = hapticStyle === 'light' ? Haptics.ImpactFeedbackStyle.Light
-                        : hapticStyle === 'heavy' ? Haptics.ImpactFeedbackStyle.Heavy
-                        : Haptics.ImpactFeedbackStyle.Medium;
-            Haptics.impactAsync(style);
-          }
-          speechStarted.current = true;
-          silenceStart.current = null;
-          setStatus('recording');
-        } else if (speechStarted.current) {
-          if (!silenceStart.current) {
-            silenceStart.current = Date.now();
-          } else if (Date.now() - silenceStart.current > silenceDurationRef.current) {
-            clearInterval(vadInterval.current!);
-            vadInterval.current = null;
-            await sendRecording();
-          }
-        }
-      }, 200);
-    } catch (e) {
-      showError('Microphone error: ' + e);
+      const { text } = await sttRes.json();
+      if (!text) return;
+      appendMessage({ role: 'user', text });
+      lastScreenChangeRef.current = Date.now();
+      const askRes = await fetch(`${serverUrl}/ask?session=${encodeURIComponent(currentSession)}&lock=${sessionLocking}`, {
+        method: 'POST',
+        headers: apiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ text }),
+        signal: abort.signal,
+      });
+      const { text: claudeText = 'No response' } = await askRes.json();
+      appendMessage({ role: 'claude', text: claudeText });
+      refreshSession();
+      if (ttsEnabled) {
+        setStatus('speaking');
+        await speak(claudeText);
+      }
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') showError('Error: ' + e);
+    } finally {
+      if (anchorVadActiveRef.current) {
+        startAnchorWaiting();
+      } else {
+        setStatus('idle');
+      }
     }
   }
 
-  async function toggleVad(value: boolean) {
-    setVadMode(value);
+  async function toggleAnchorVad(value: boolean) {
+    setAnchorVadMode(value);
+    AsyncStorage.setItem(STORAGE_KEYS.anchorVadMode, String(value)).catch(() => {});
     if (value) {
-      await stopCalibration();
-      await Audio.requestPermissionsAsync();
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: true,
-      });
-      vadActiveRef.current = true;
-      startListening();
+      await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      anchorVadActiveRef.current = true;
+      if (anchorTimeoutRef.current) clearInterval(anchorTimeoutRef.current);
+      anchorTimeoutRef.current = setInterval(() => {
+        if (!anchorVadActiveRef.current || anchorPhaseRef.current !== 'recording') return;
+        const elapsed = Date.now() - anchorStartTimeRef.current;
+        const sinceSpeech = Date.now() - anchorLastSpeechRef.current;
+        if (elapsed > 5 * 60_000) {
+          ExpoSpeechRecognitionModule.stop();
+        } else if (elapsed > 2 * 60_000 && sinceSpeech > 20_000) {
+          ExpoSpeechRecognitionModule.stop();
+        }
+      }, 5000);
+      startAnchorWaiting();
     } else {
-      vadActiveRef.current = false;
-      if (vadInterval.current) { clearInterval(vadInterval.current); vadInterval.current = null; }
-      if (recordingRef.current) { await recordingRef.current.stopAndUnloadAsync(); recordingRef.current = null; }
+      anchorVadActiveRef.current = false;
+      if (anchorTimeoutRef.current) { clearInterval(anchorTimeoutRef.current); anchorTimeoutRef.current = null; }
+      ExpoSpeechRecognitionModule.abort();
       setStatus('idle');
-      if (settingsOpen && secAudio) startCalibration();
     }
   }
+
+  useSpeechRecognitionEvent('result', (event) => {
+    if (!anchorVadActiveRef.current) return;
+    const transcript = (event.results[0]?.transcript ?? '').toLowerCase();
+    if (!transcript) return;
+    anchorLastSpeechRef.current = Date.now();
+    if (anchorPhaseRef.current === 'waiting') {
+      if (transcript.includes(WAKE_WORD)) {
+        anchorPhaseRef.current = 'transitioning';
+        ExpoSpeechRecognitionModule.abort();
+      }
+    } else if (anchorPhaseRef.current === 'recording') {
+      if (transcript.includes(END_WORD)) {
+        anchorPhaseRef.current = 'transitioning';
+        ExpoSpeechRecognitionModule.stop();
+      }
+    }
+  });
+
+  useSpeechRecognitionEvent('audioend', (event) => {
+    if (!anchorVadActiveRef.current) return;
+    if (event.uri) anchorAudioUriRef.current = event.uri;
+  });
+
+  useSpeechRecognitionEvent('end', () => {
+    if (!anchorVadActiveRef.current) return;
+    const phase = anchorPhaseRef.current;
+    if (phase === 'waiting') {
+      setTimeout(() => startAnchorWaiting(), 300);
+    } else if (phase === 'transitioning') {
+      const uri = anchorAudioUriRef.current;
+      anchorAudioUriRef.current = null;
+      if (uri) {
+        sendAnchorAudio(uri);
+      } else {
+        setTimeout(() => startAnchorRecording(), 300);
+      }
+    } else if (phase === 'recording') {
+      // Natural end (OS timeout, etc.)
+      const uri = anchorAudioUriRef.current;
+      anchorAudioUriRef.current = null;
+      if (uri) {
+        sendAnchorAudio(uri);
+      } else {
+        setTimeout(() => startAnchorWaiting(), 300);
+      }
+    }
+  });
+
+  useSpeechRecognitionEvent('error', (event) => {
+    if (!anchorVadActiveRef.current) return;
+    if (event.error === 'aborted') return;
+    showError(`VAD: ${event.error}`);
+  });
 
   // ── Manual recording ───────────────────────────────────────────────────────
   async function startRecording() {
@@ -1187,17 +1210,9 @@ export default function VoiceScreen() {
       setError('');
       await Audio.requestPermissionsAsync();
       await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-      const { recording } = await Audio.Recording.createAsync({
-        ...Audio.RecordingOptionsPresets.HIGH_QUALITY,
-        isMeteringEnabled: true,
-      });
+      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       recordingRef.current = recording;
       setStatus('recording');
-      meteringIntervalRef.current = setInterval(async () => {
-        if (!recordingRef.current) return;
-        const s = await recordingRef.current.getStatusAsync();
-        setAudioLevel((s as any).metering ?? null);
-      }, 100);
     } catch (e) {
       showError('Microphone error: ' + e);
     }
@@ -1209,7 +1224,6 @@ export default function VoiceScreen() {
   }
 
   function handlePress() {
-    if (vadMode) return;
     if (status === 'idle') startRecording();
     else if (status === 'recording') stopAndSend();
   }
@@ -1223,7 +1237,13 @@ export default function VoiceScreen() {
     speaking:   '#E2A84A',
   }[status];
 
-  const buttonLabel = {
+  const buttonLabel = anchorVadMode ? {
+    idle:       '⏸ VAD paused',
+    listening:  '👂 Say "алло привет"...',
+    recording:  '🔴 Say "алло пока" to send',
+    processing: '⏳ Processing...',
+    speaking:   '🔊 Speaking...',
+  }[status] : {
     idle:       '🎤 Tap to speak',
     listening:  '👂 Listening...',
     recording:  '🔴 Speaking...',
@@ -1420,43 +1440,11 @@ export default function VoiceScreen() {
                 </View>
               </View>
               <View style={styles.settingRow}>
-                <Text style={styles.settingLabel}>VAD (auto-send)</Text>
-                <Switch value={vadMode} onValueChange={toggleVad} thumbColor={vadMode ? '#4AE27A' : '#888'} />
-              </View>
-              <View style={styles.levelLabelRow}>
-                <Text style={styles.inputLabel}>Noise threshold</Text>
-                <Text style={styles.levelDbText}>
-                  {audioLevel !== null ? `mic: ${audioLevel.toFixed(0)} dB  ·  ` : ''}threshold: {speechThreshold.toFixed(0)} dB
+                <Text style={[styles.settingLabel, { flex: 1 }]}>Anchor VAD{'\n'}
+                  <Text style={{ color: '#888', fontSize: 12 }}>Wake: "алло привет" · End: "алло пока"</Text>
                 </Text>
+                <Switch value={anchorVadMode} onValueChange={toggleAnchorVad} thumbColor={anchorVadMode ? '#4AE27A' : '#888'} />
               </View>
-              <View
-                style={styles.levelBarBg}
-                onLayout={e => { levelBarWidth.current = e.nativeEvent.layout.width; }}
-                {...thresholdPanResponder.panHandlers}
-              >
-                {audioLevel !== null && (
-                  <View style={[styles.levelBarFill, {
-                    width: `${Math.max(0, Math.min(100, (audioLevel + 60) / 60 * 100))}%` as any,
-                    backgroundColor: audioLevel > speechThresholdRef.current ? '#E24A4A' : '#4AE27A',
-                  }]} />
-                )}
-                <View style={[styles.levelThresholdMark, {
-                  left: `${Math.max(0, Math.min(100, (speechThresholdRef.current + 60) / 60 * 100))}%` as any,
-                }]} />
-              </View>
-              <Text style={styles.inputLabel}>Silence before send (ms, default 2500)</Text>
-              <TextInput
-                style={styles.input}
-                value={String(silenceDuration)}
-                onChangeText={(v) => {
-                  const n = parseInt(v);
-                  if (!isNaN(n)) { setSilenceDuration(n); silenceDurationRef.current = n; }
-                }}
-                onEndEditing={() => saveSettings({ silenceDuration })}
-                placeholder="2500"
-                placeholderTextColor="#555"
-                keyboardType="numeric"
-              />
               <TouchableOpacity style={styles.settingRow} onPress={() => setHapticOpen(v => !v)}>
                 <Text style={styles.settingLabel}>Haptic feedback</Text>
                 <Text style={styles.settingLabel}>{HAPTIC_OPTIONS.find(o => o.value === hapticStyle)?.label} {hapticOpen ? '▲' : '▼'}</Text>
@@ -1899,7 +1887,7 @@ export default function VoiceScreen() {
               }
             </View>
 
-            {!keyboardVisible && !vadMode && (
+            {!keyboardVisible && !anchorVadMode && (
               <View style={[styles.buttonRow, { marginBottom: insets.bottom + 1 }]}>
                 <TouchableOpacity
                   style={[styles.button, { backgroundColor: buttonColor, flex: 1 }]}
@@ -1914,7 +1902,7 @@ export default function VoiceScreen() {
               </View>
             )}
 
-            {!keyboardVisible && vadMode && (
+            {!keyboardVisible && anchorVadMode && (
               <View style={[styles.vadRow, { marginBottom: insets.bottom + 1 }]}>
                 <View style={[styles.vadIndicator, { backgroundColor: buttonColor, flex: 1 }]}>
                   {status === 'processing'
@@ -2137,13 +2125,6 @@ const styles = StyleSheet.create({
   userBubble:         { backgroundColor: '#4A90E2', alignSelf: 'flex-end' },
   claudeBubble:       { backgroundColor: '#2a2a4e', alignSelf: 'flex-start' },
   bubbleText:         { color: '#fff', fontSize: 15 },
-  levelContainer:     { flexDirection: 'row', alignItems: 'center', marginHorizontal: 20, marginBottom: 8, gap: 10 },
-  levelLabelRow:      { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  levelDbText:        { color: '#aaa', fontSize: 12 },
-  levelBarBg:         { height: 36, backgroundColor: '#2a2a4e', borderRadius: 8, overflow: 'hidden', position: 'relative', marginBottom: 12 },
-  levelBarFill:       { height: '100%', borderRadius: 8 },
-  levelThresholdMark: { position: 'absolute', top: 0, width: 3, height: '100%', backgroundColor: '#fff', opacity: 0.9 },
-  levelText:          { color: '#aaa', fontSize: 12, width: 48, textAlign: 'right' },
   clockText:          { color: '#888', fontSize: 16, fontVariant: ['tabular-nums'] },
   pinScreen:          { flex: 1, backgroundColor: '#0f0f1a', alignItems: 'center', justifyContent: 'center', padding: 32 },
   pinTitle:           { color: '#4AE27A', fontSize: 24, fontWeight: 'bold', marginBottom: 8 },
