@@ -33,7 +33,29 @@ const semverLt = (a: string, b: string) => {
   return false;
 };
 const DEFAULT_WAKE_WORD = 'алло привет';
-const DEFAULT_END_WORD = 'покедово';
+const DEFAULT_END_WORD = 'алло пока';
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => i === 0 ? j : j === 0 ? i : 0)
+  );
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+  return dp[m][n];
+}
+
+function fuzzyIncludes(text: string, phrase: string, maxDist = 1): boolean {
+  if (text.includes(phrase)) return true;
+  const pLen = phrase.length;
+  for (let i = 0; i <= text.length - pLen + maxDist; i++) {
+    for (let len = Math.max(1, pLen - maxDist); len <= pLen + maxDist; len++) {
+      if (levenshtein(text.slice(i, i + len), phrase) <= maxDist) return true;
+    }
+  }
+  return false;
+}
 const MAX_MESSAGES = 100;
 const TERMINAL_LINES = 10;      // default lines per page in terminal
 
@@ -1135,7 +1157,7 @@ export default function VoiceScreen() {
     setAnchorTranscript(transcript);
 
     if (anchorPhaseRef.current === 'waiting') {
-      if (transcript.includes(wakeWordRef.current)) {
+      if (fuzzyIncludes(transcript, wakeWordRef.current)) {
         anchorPhaseRef.current = 'accumulating';
         anchorBufferRef.current = '';
         anchorStartTimeRef.current = Date.now();
@@ -1149,7 +1171,7 @@ export default function VoiceScreen() {
         ExpoSpeechRecognitionModule.abort();
         return;
       }
-      if (transcript.includes(endWordRef.current)) {
+      if (fuzzyIncludes(transcript, endWordRef.current)) {
         // Take text up to end word from this session
         const endIdx = transcript.indexOf(endWordRef.current);
         const before = transcript.slice(0, endIdx).trim();
