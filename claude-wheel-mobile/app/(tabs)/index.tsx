@@ -259,7 +259,7 @@ export default function VoiceScreen() {
   const [creatingShellSession, setCreatingShellSession] = useState(false);
   const [openShellSessions, setOpenShellSessions] = useState<string[]>([]);
   const [shellScreens, setShellScreens] = useState<{[name: string]: string}>({});
-  const [shellCursors, setShellCursors] = useState<{[name: string]: {x: number, y: number, paneHeight: number} | null}>({});
+  const [shellCursors, setShellCursors] = useState<{[name: string]: {x: number, y: number, paneHeight: number, totalLines: number} | null}>({});
   const [shellInputs, setShellInputs] = useState<{[name: string]: string}>({});
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const pagerRef = useRef<ScrollView>(null);
@@ -359,7 +359,7 @@ export default function VoiceScreen() {
         const r = await fetch(`${serverUrl}/screen?session=${encodeURIComponent(currentSession)}&api_key=${encodeURIComponent(serverApiKey)}`);
         const data = await r.json();
         if (!active) return;
-        const screen = (data.screen ?? '').replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+        const screen = (data.screen ?? '').trimEnd().replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
         const prev = lastScreenRef.current;
         lastScreenRef.current = screen;
 
@@ -811,7 +811,7 @@ export default function VoiceScreen() {
     try {
       const r = await fetch(`${serverUrl}/screen?session=${encodeURIComponent(currentSession)}&api_key=${encodeURIComponent(serverApiKey)}&start=0&count=2000`);
       const data = await r.json();
-      setScreenLines((data.screen ?? '').split('\n'));
+      setScreenLines((data.screen ?? '').trimEnd().split('\n'));
       if (terminalAtBottom.current) {
         setTimeout(() => terminalScrollRef.current?.scrollToEnd({ animated: false }), 50);
       }
@@ -862,7 +862,8 @@ export default function VoiceScreen() {
         const data = await r.json();
         setShellScreens(prev => ({ ...prev, [shellName]: (data.screen ?? '').trimEnd() }));
         if (data.cursor_x != null && data.cursor_y != null && data.pane_height != null) {
-          setShellCursors(prev => ({ ...prev, [shellName]: { x: data.cursor_x, y: data.cursor_y, paneHeight: data.pane_height } }));
+          const totalLines = (data.screen ?? '').trimEnd().split('\n').length;
+          setShellCursors(prev => ({ ...prev, [shellName]: { x: data.cursor_x, y: data.cursor_y, paneHeight: data.pane_height, totalLines } }));
         }
         if (keyboardVisibleRef.current && shellAutoScroll.current[shellName] !== false) {
           setTimeout(() => shellTerminalRefs.current[shellName]?.scrollToEnd({ animated: false }), 50);
@@ -1281,7 +1282,7 @@ export default function VoiceScreen() {
   }
 
   return (
-    <KeyboardAvoidingView style={styles.container} behavior="padding" onTouchStart={resetActivity}>
+    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} onTouchStart={resetActivity}>
       {pinMode === 'unlocked' && <KeepAwake />}
       <View style={styles.header} onLayout={e => setHeaderH(e.nativeEvent.layout.height)}>
         <TouchableOpacity onPress={() => { loadSessions(); setNewSessionName(''); setNewSessionDir(''); setDirEdited(false); setSessionsOpen(true); }}>
@@ -1973,7 +1974,7 @@ export default function VoiceScreen() {
                 const cursor = shellCursors[name];
                 if (!cursor) return <Text selectable style={[styles.terminalText, { fontSize }]}>{screen}</Text>;
                 const lines = screen.split('\n');
-                const offset = Math.max(0, lines.length - cursor.paneHeight);
+                const offset = Math.max(0, cursor.totalLines - cursor.paneHeight);
                 const cy = offset + cursor.y;
                 const before = lines.slice(0, cy).join('\n') + (cy > 0 ? '\n' : '');
                 const curLine = lines[cy] ?? '';

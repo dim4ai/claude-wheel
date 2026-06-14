@@ -227,16 +227,34 @@ server {
 
   <!-- ── Endpoints ── -->
   <h2>API endpoints</h2>
+
+  <h3 style="color:#c8d0e0; margin: 16px 0 8px;">Claude sessions</h3>
+  <table>
+    <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+    <tr><td><code>POST</code></td><td><code>/ask</code></td><td>Send text to Claude, get a response</td></tr>
+    <tr><td><code>GET</code></td><td><code>/screen</code></td><td>Snapshot of the current Claude session tmux screen</td></tr>
+    <tr><td><code>POST</code></td><td><code>/keypress</code></td><td>Send a key to the Claude session (Up / Down / Enter / Escape)</td></tr>
+    <tr><td><code>POST</code></td><td><code>/dispatch</code></td><td>Claude session management: <code>list</code> / <code>switch</code> / <code>create</code> / <code>recreate</code> / <code>close</code> / <code>rename</code></td></tr>
+  </table>
+
+  <h3 style="color:#c8d0e0; margin: 16px 0 8px;">Shell sessions</h3>
+  <table>
+    <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+    <tr><td><code>GET</code></td><td><code>/shell-sessions</code></td><td>List all tmux sessions on the server</td></tr>
+    <tr><td><code>GET</code></td><td><code>/shell-screen</code></td><td>Shell session screen snapshot + cursor position (<code>cursor_x</code>, <code>cursor_y</code>, <code>pane_height</code>)</td></tr>
+    <tr><td><code>POST</code></td><td><code>/shell-input</code></td><td>Send text or a key to a shell session</td></tr>
+    <tr><td><code>POST</code></td><td><code>/shell-create</code></td><td>Create a new shell session</td></tr>
+    <tr><td><code>DELETE</code></td><td><code>/shell-session</code></td><td>Close a shell session</td></tr>
+  </table>
+
+  <h3 style="color:#c8d0e0; margin: 16px 0 8px;">Other</h3>
   <table>
     <tr><th>Method</th><th>Path</th><th>Description</th></tr>
     <tr><td><code>POST</code></td><td><code>/stt</code></td><td>Audio → text (Groq Whisper)</td></tr>
-    <tr><td><code>POST</code></td><td><code>/tts</code></td><td>Text → MP3 (Edge TTS)</td></tr>
-    <tr><td><code>POST</code></td><td><code>/ask</code></td><td>Send text to Claude, get a response</td></tr>
-    <tr><td><code>POST</code></td><td><code>/dispatch</code></td><td>Session management (list / switch / create / recreate / close)</td></tr>
-    <tr><td><code>GET</code></td><td><code>/screen</code></td><td>Snapshot of the current tmux screen</td></tr>
-    <tr><td><code>POST</code></td><td><code>/keypress</code></td><td>Send a key to the session (Up / Down / Enter / Escape)</td></tr>
-    <tr><td><code>GET</code></td><td><code>/health</code></td><td>Server availability check</td></tr>
+    <tr><td><code>GET/POST</code></td><td><code>/tts</code></td><td>Text → MP3 (Edge TTS)</td></tr>
+    <tr><td><code>GET</code></td><td><code>/health</code></td><td>Server availability check; returns server <code>version</code></td></tr>
   </table>
+
   <div class="note">All endpoints (except <code>/health</code>) require the <code>x-api-key</code> header or the <code>?api_key=</code> parameter.</div>
 
   <a class="back" href="main-guide.html" style="display:inline-block; margin-top:40px;">← Back to main</a>

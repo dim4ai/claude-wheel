@@ -134,6 +134,7 @@
       <li><a href="#terminal">Terminal</a></li>
       <li><a href="#sessions">Claude session management</a></li>
       <li><a href="#shell">Shell session management</a></li>
+      <li><a href="#updates">Updates</a></li>
       <li><a href="#encryption">Data encryption</a></li>
       <li><a href="#build">Building APK</a></li>
       <li><a href="#tips">Tips</a></li>
@@ -157,8 +158,8 @@
       <ul>
         <li><strong>Header</strong> — app name and current session</li>
         <li><strong>🔊 / 🔇</strong> — quick toggle for response text-to-speech</li>
-        <li><strong>⚙️</strong> — settings button in the top-right corner</li>
-        <li><strong>🟢 / 🔴 indicator</strong> next to the gear — server connection status: 🟢 available, 🔴 unavailable</li>
+        <li><strong>⚙️</strong> — settings button in the top-right corner; current time is displayed below it</li>
+        <li><strong>🟢 / 🟠 / 🔴 indicator</strong> next to the gear — server status:<br>🟢 available, 🟠 server version outdated (update needed), 🔴 unavailable</li>
         <li><strong>Message feed</strong> — conversation history with Claude, persisted between app restarts</li>
         <li><strong>▼ Terminal</strong> — expand the Claude session screen panel</li>
         <li><strong>Input field</strong> — type messages manually + ↑ button to send</li>
@@ -346,6 +347,7 @@
   <p>Available control keys:</p>
   <ul>
     <li><strong>Esc</strong> — cancel action</li>
+    <li><strong>⏬︎</strong> — scroll terminal to bottom and enable auto-scroll</li>
     <li><strong>↑ / ↓</strong> — navigate menu</li>
     <li><strong>↵ Enter</strong> — confirm selection</li>
   </ul>
@@ -353,9 +355,9 @@
   <div class="note">When Claude shows a menu with response options — use the arrows to select and Enter to confirm. Esc — to cancel.</div>
   <div style="display:flex; gap:12px; justify-content:center; margin:24px 0;">
     <img src="img/1780480315747.jpg" class="lb" style="width:22%; border-radius:12px; border:1px solid #2a2a4e;" alt="Terminal closed">
-    <img src="img/1780480315745.jpg" class="lb" style="width:22%; border-radius:12px; border:1px solid #2a2a4e;" alt="Terminal open">
-    <img src="img/1780480315742.jpg" class="lb" style="width:22%; border-radius:12px; border:1px solid #2a2a4e;" alt="Terminal — hung">
-    <img src="img/1780480315739.jpg" class="lb" style="width:22%; border-radius:12px; border:1px solid #2a2a4e;" alt="Terminal — red">
+    <img src="img/1781378460492.jpg" class="lb" style="width:22%; border-radius:12px; border:1px solid #2a2a4e;" alt="Terminal open">
+    <img src="img/1781378460489.jpg" class="lb" style="width:22%; border-radius:12px; border:1px solid #2a2a4e;" alt="Terminal — hung">
+    <img src="img/1781378460485.jpg" class="lb" style="width:22%; border-radius:12px; border:1px solid #2a2a4e;" alt="Terminal — red">
   </div>
   <p>Example: Claude is asking permission to perform an action. Three response options are visible. Select the one you need with the arrows and press Enter.</p>
 
@@ -364,7 +366,7 @@
   <p>Tap the session name below the app header to open the session list.</p>
 
   <div class="screen">
-    <img src="img/1780480315752.jpg" alt="Session list">
+    <img src="img/1781378460475.jpg" alt="Session list">
     <div class="screen-text">
       <h3>Session list</h3>
       <ul>
@@ -412,7 +414,7 @@
 
   <h3>Opening a Shell session</h3>
   <div class="screen">
-    <img src="img/shell-sessions-list.jpg" alt="Shell session list">
+    <img src="img/1781378460482.jpg" alt="Shell session list">
     <div class="screen-text">
       <p>Tap the current Claude session name in the header to open the menu. The <strong>Shell sessions</strong> section shows the list of existing tmux sessions on the server. Tap a session — it will open by swiping right from the main screen.</p>
       <p>To return to the main screen — swipe left. To close the Shell page, tap <strong>✕</strong> in the top-right corner — <strong>the session on the server continues running.</strong></p>
@@ -428,7 +430,7 @@
 
   <h3>Terminal input</h3>
   <div class="screen">
-    <img src="img/shell-session-inside.jpg" alt="Inside a Shell session">
+    <img src="img/1781378460479.jpg" alt="Inside a Shell session">
     <div class="screen-text">
   <ul>
     <li>Tap <strong>⌨️</strong> to open the keyboard.</li>
@@ -456,10 +458,20 @@
 
   <h4 style="color:#c8d0e0; margin: 16px 0 8px;">Navigation keys</h4>
   <ul>
-    <li><strong>↑ / ↓</strong> — navigate command history</li>
+    <li><strong>↓ / ↑</strong> — navigate command history</li>
+    <li><strong>← / →</strong> — move cursor within the line</li>
     <li><strong>↵</strong> — Enter</li>
+    <li><strong>⏬︎</strong> — scroll terminal to bottom and enable auto-scroll</li>
     <li><strong>Tab</strong> — autocomplete path or command. Press twice to show all options.</li>
   </ul>
+  <p>The key row scrolls horizontally — including when the keyboard is closed.</p>
+  <p>The current cursor position in the terminal is shown with a blue character highlight.</p>
+  <div class="note">If you scroll the terminal up, auto-scroll is disabled — new lines won't jump to the bottom. Press <strong>⏬︎</strong> to return to the end and re-enable auto-scroll.</div>
+
+  <!-- ── Updates ── -->
+  <h2 id="updates">Updates</h2>
+  <p>On launch the app checks for a new version on GitHub. If a newer version is available — a button <strong>«vX.X.X available — tap to download»</strong> appears on the login screen. Tap it to open the releases page in the browser.</p>
+  <p>When updating the mobile app, also check the server version: if the indicator next to the gear turned orange 🟠 — the server needs to be updated. Download the source archive from the same GitHub release (Source code), update the server files and restart the service.</p>
 
   <!-- ── Data encryption ── -->
   <h2 id="encryption">Data encryption</h2>
