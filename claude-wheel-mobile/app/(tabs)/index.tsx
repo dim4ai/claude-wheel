@@ -1091,6 +1091,7 @@ export default function VoiceScreen() {
       lang: 'ru-RU',
       interimResults: true,
       contextualStrings: anchorPhaseRef.current === 'waiting' ? [wakeWordRef.current] : [endWordRef.current],
+      androidIntent: 'android.speech.action.VOICE_SEARCH_HANDS_FREE',
     });
   }
 
@@ -1938,9 +1939,6 @@ export default function VoiceScreen() {
                     }
                   </View>
                 </View>
-                {!!anchorTranscript && (
-                  <Text style={{ color: '#888', fontSize: 12, textAlign: 'center', marginHorizontal: 20 }} numberOfLines={2}>{anchorTranscript}</Text>
-                )}
               </View>
             )}
           </View>
