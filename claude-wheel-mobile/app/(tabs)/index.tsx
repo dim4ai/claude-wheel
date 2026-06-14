@@ -916,12 +916,13 @@ export default function VoiceScreen() {
   const soundRef     = useRef<Audio.Sound | null>(null);
 
   // ── Anchor VAD refs ───────────────────────────────────────────────────────
-  const anchorVadActiveRef  = useRef(false);
-  const anchorPhaseRef      = useRef<'waiting' | 'recording' | 'transitioning'>('waiting');
-  const anchorStartTimeRef  = useRef(0);
-  const anchorLastSpeechRef = useRef(0);
-  const anchorAudioUriRef   = useRef<string | null>(null);
-  const anchorTimeoutRef    = useRef<ReturnType<typeof setInterval> | null>(null);
+  const anchorVadActiveRef    = useRef(false);
+  const anchorPhaseRef        = useRef<'waiting' | 'accumulating' | 'sending'>('waiting');
+  const anchorStartTimeRef    = useRef(0);
+  const anchorBufferRef       = useRef('');       // accumulated text after wake word
+  const anchorLastTranscript  = useRef('');       // last STT result in current session
+  const anchorSkipSessionRef  = useRef(false);    // skip end-of-session append on wake word session
+  const anchorTimeoutRef      = useRef<ReturnType<typeof setInterval> | null>(null);
 
 
   // ── TTS ────────────────────────────────────────────────────────────────────
@@ -1052,53 +1053,23 @@ export default function VoiceScreen() {
   }
 
   // ── Anchor VAD ────────────────────────────────────────────────────────────
-  function startAnchorWaiting() {
+  function startSttSession() {
     if (!anchorVadActiveRef.current) return;
-    anchorPhaseRef.current = 'waiting';
-    anchorAudioUriRef.current = null;
-    setStatus('listening');
     ExpoSpeechRecognitionModule.start({
       lang: 'ru-RU',
-      continuous: true,
       interimResults: true,
-      contextualStrings: [WAKE_WORD],
+      contextualStrings: anchorPhaseRef.current === 'waiting' ? [WAKE_WORD] : [END_WORD],
     });
   }
 
-  function startAnchorRecording() {
-    if (!anchorVadActiveRef.current) return;
-    anchorPhaseRef.current = 'recording';
-    anchorAudioUriRef.current = null;
-    anchorStartTimeRef.current = Date.now();
-    anchorLastSpeechRef.current = Date.now();
-    setStatus('recording');
-    ExpoSpeechRecognitionModule.start({
-      lang: 'ru-RU',
-      continuous: true,
-      interimResults: true,
-      contextualStrings: [END_WORD],
-      recordingOptions: { persist: true },
-    });
-  }
-
-  async function sendAnchorAudio(uri: string) {
+  async function sendAnchorText(text: string) {
     cancelledRef.current = false;
     setStatus('processing');
     try {
-      const formData = new FormData();
-      formData.append('audio', { uri, name: 'anchor.wav', type: 'audio/wav' } as any);
-      const abort = new AbortController();
-      abortControllerRef.current = abort;
-      const sttRes = await fetch(`${serverUrl}/stt?language=${language}`, {
-        method: 'POST',
-        headers: apiHeaders(),
-        body: formData,
-        signal: abort.signal,
-      });
-      const { text } = await sttRes.json();
-      if (!text) return;
       appendMessage({ role: 'user', text });
       lastScreenChangeRef.current = Date.now();
+      const abort = new AbortController();
+      abortControllerRef.current = abort;
       const askRes = await fetch(`${serverUrl}/ask?session=${encodeURIComponent(currentSession)}&lock=${sessionLocking}`, {
         method: 'POST',
         headers: apiHeaders({ 'Content-Type': 'application/json' }),
@@ -1116,7 +1087,11 @@ export default function VoiceScreen() {
       if (e?.name !== 'AbortError') showError('Error: ' + e);
     } finally {
       if (anchorVadActiveRef.current) {
-        startAnchorWaiting();
+        anchorBufferRef.current = '';
+        anchorPhaseRef.current = 'waiting';
+        setAnchorTranscript('');
+        setStatus('listening');
+        setTimeout(() => startSttSession(), 300);
       } else {
         setStatus('idle');
       }
@@ -1129,18 +1104,11 @@ export default function VoiceScreen() {
     if (value) {
       await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       anchorVadActiveRef.current = true;
-      if (anchorTimeoutRef.current) clearInterval(anchorTimeoutRef.current);
-      anchorTimeoutRef.current = setInterval(() => {
-        if (!anchorVadActiveRef.current || anchorPhaseRef.current !== 'recording') return;
-        const elapsed = Date.now() - anchorStartTimeRef.current;
-        const sinceSpeech = Date.now() - anchorLastSpeechRef.current;
-        if (elapsed > 5 * 60_000) {
-          ExpoSpeechRecognitionModule.stop();
-        } else if (elapsed > 2 * 60_000 && sinceSpeech > 20_000) {
-          ExpoSpeechRecognitionModule.stop();
-        }
-      }, 5000);
-      startAnchorWaiting();
+      anchorPhaseRef.current = 'waiting';
+      anchorBufferRef.current = '';
+      anchorLastTranscript.current = '';
+      setStatus('listening');
+      startSttSession();
     } else {
       anchorVadActiveRef.current = false;
       if (anchorTimeoutRef.current) { clearInterval(anchorTimeoutRef.current); anchorTimeoutRef.current = null; }
@@ -1153,49 +1121,57 @@ export default function VoiceScreen() {
     if (!anchorVadActiveRef.current) return;
     const transcript = (event.results[0]?.transcript ?? '').toLowerCase();
     if (!transcript) return;
-    anchorLastSpeechRef.current = Date.now();
+    anchorLastTranscript.current = transcript;
     setAnchorTranscript(transcript);
+
     if (anchorPhaseRef.current === 'waiting') {
       if (transcript.includes(WAKE_WORD)) {
-        anchorPhaseRef.current = 'transitioning';
+        anchorPhaseRef.current = 'accumulating';
+        anchorBufferRef.current = '';
+        anchorStartTimeRef.current = Date.now();
+        anchorSkipSessionRef.current = true; // discard this session's text
+        setStatus('recording');
+      }
+    } else if (anchorPhaseRef.current === 'accumulating') {
+      // 5 min timeout
+      if (Date.now() - anchorStartTimeRef.current > 5 * 60_000) {
+        anchorPhaseRef.current = 'sending';
+        ExpoSpeechRecognitionModule.abort();
+        return;
+      }
+      if (transcript.includes(END_WORD)) {
+        // Take text up to end word from this session
+        const endIdx = transcript.indexOf(END_WORD);
+        const before = transcript.slice(0, endIdx).trim();
+        if (before) anchorBufferRef.current += (anchorBufferRef.current ? ' ' : '') + before;
+        anchorSkipSessionRef.current = true; // already added what we need
+        anchorPhaseRef.current = 'sending';
         ExpoSpeechRecognitionModule.abort();
       }
-    } else if (anchorPhaseRef.current === 'recording') {
-      if (transcript.includes(END_WORD)) {
-        anchorPhaseRef.current = 'transitioning';
-        ExpoSpeechRecognitionModule.stop();
-      }
     }
-  });
-
-  useSpeechRecognitionEvent('audioend', (event) => {
-    if (!anchorVadActiveRef.current) return;
-    if (event.uri) anchorAudioUriRef.current = event.uri;
   });
 
   useSpeechRecognitionEvent('end', () => {
     if (!anchorVadActiveRef.current) return;
     const phase = anchorPhaseRef.current;
-    if (phase === 'waiting') {
-      setTimeout(() => startAnchorWaiting(), 300);
-    } else if (phase === 'transitioning') {
-      const uri = anchorAudioUriRef.current;
-      anchorAudioUriRef.current = null;
-      if (uri) {
-        sendAnchorAudio(uri);
-      } else {
-        setTimeout(() => startAnchorRecording(), 300);
-      }
-    } else if (phase === 'recording') {
-      // Natural end (OS timeout, etc.)
-      const uri = anchorAudioUriRef.current;
-      anchorAudioUriRef.current = null;
-      if (uri) {
-        sendAnchorAudio(uri);
-      } else {
-        setTimeout(() => startAnchorWaiting(), 300);
-      }
+
+    if (phase === 'sending') {
+      const text = anchorBufferRef.current.trim();
+      anchorBufferRef.current = '';
+      anchorLastTranscript.current = '';
+      anchorSkipSessionRef.current = false;
+      anchorPhaseRef.current = 'waiting';
+      if (text) sendAnchorText(text);
+      else { setStatus('listening'); setTimeout(() => startSttSession(), 200); }
+      return;
     }
+
+    if (!anchorSkipSessionRef.current && anchorLastTranscript.current && phase === 'accumulating') {
+      anchorBufferRef.current += (anchorBufferRef.current ? ' ' : '') + anchorLastTranscript.current;
+    }
+    anchorSkipSessionRef.current = false;
+    anchorLastTranscript.current = '';
+    setTimeout(() => startSttSession(), 200);
   });
 
   useSpeechRecognitionEvent('error', (event) => {
@@ -1240,7 +1216,7 @@ export default function VoiceScreen() {
   const buttonLabel = anchorVadMode ? {
     idle:       '⏸ VAD paused',
     listening:  '👂 Say "алло привет"...',
-    recording:  '🔴 Say "покедово" to send',
+    recording:  '🔴 Speak — say "покедово" to send',
     processing: '⏳ Processing...',
     speaking:   '🔊 Speaking...',
   }[status] : {
