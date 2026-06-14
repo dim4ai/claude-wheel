@@ -1209,7 +1209,7 @@ export default function VoiceScreen() {
 
   useSpeechRecognitionEvent('error', (event) => {
     if (!anchorVadActiveRef.current) return;
-    if (event.error === 'aborted') return;
+    if (event.error === 'aborted' || event.error === 'no-speech') return;
     showError(`VAD: ${event.error}`);
   });
 
