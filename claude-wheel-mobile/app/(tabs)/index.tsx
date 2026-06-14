@@ -954,6 +954,7 @@ export default function VoiceScreen() {
   const anchorBufferRef       = useRef('');       // accumulated text after wake word
   const anchorLastTranscript  = useRef('');       // last STT result in current session
   const anchorSkipSessionRef  = useRef(false);    // skip end-of-session append on wake word session
+  const anchorProcessingRef   = useRef(false);    // true while sendAnchorText is running
   const anchorTimeoutRef      = useRef<ReturnType<typeof setInterval> | null>(null);
 
 
@@ -1090,12 +1091,14 @@ export default function VoiceScreen() {
     ExpoSpeechRecognitionModule.start({
       lang: 'ru-RU',
       interimResults: true,
+      continuous: true,
       contextualStrings: anchorPhaseRef.current === 'waiting' ? [wakeWordRef.current] : [endWordRef.current],
       androidIntent: 'android.speech.action.VOICE_SEARCH_HANDS_FREE',
     });
   }
 
   async function sendAnchorText(text: string) {
+    anchorProcessingRef.current = true;
     cancelledRef.current = false;
     setStatus('processing');
     try {
@@ -1119,6 +1122,7 @@ export default function VoiceScreen() {
     } catch (e: any) {
       if (e?.name !== 'AbortError') showError('Error: ' + e);
     } finally {
+      anchorProcessingRef.current = false;
       if (anchorVadActiveRef.current) {
         anchorBufferRef.current = '';
         anchorPhaseRef.current = 'waiting';
@@ -1154,56 +1158,60 @@ export default function VoiceScreen() {
     if (!anchorVadActiveRef.current) return;
     const transcript = (event.results[0]?.transcript ?? '').toLowerCase();
     if (!transcript) return;
-    anchorLastTranscript.current = transcript;
-    setAnchorTranscript(transcript);
-
     if (anchorPhaseRef.current === 'waiting') {
       if (fuzzyIncludes(transcript, wakeWordRef.current)) {
         anchorPhaseRef.current = 'accumulating';
         anchorBufferRef.current = '';
+        anchorLastTranscript.current = '';
         anchorStartTimeRef.current = Date.now();
-        anchorSkipSessionRef.current = true; // discard this session's text
         setStatus('recording');
       }
     } else if (anchorPhaseRef.current === 'accumulating') {
-      // 5 min timeout
+      // detect utterance boundary: new transcript doesn't start with previous
+      const prev = anchorLastTranscript.current;
+      if (prev && !transcript.startsWith(prev.slice(0, Math.min(prev.length, 20)))) {
+        anchorBufferRef.current += (anchorBufferRef.current ? ' ' : '') + prev;
+      }
+      anchorLastTranscript.current = transcript;
       if (Date.now() - anchorStartTimeRef.current > 5 * 60_000) {
+        const text = anchorBufferRef.current.trim();
+        anchorBufferRef.current = '';
+        anchorLastTranscript.current = '';
         anchorPhaseRef.current = 'sending';
-        ExpoSpeechRecognitionModule.abort();
+        ExpoSpeechRecognitionModule.stop();
+        if (text) sendAnchorText(text);
         return;
       }
       if (fuzzyIncludes(transcript, endWordRef.current)) {
-        // Take text up to end word from this session
         const endIdx = transcript.indexOf(endWordRef.current);
         const before = transcript.slice(0, endIdx).trim();
         if (before) anchorBufferRef.current += (anchorBufferRef.current ? ' ' : '') + before;
-        anchorSkipSessionRef.current = true; // already added what we need
+        const text = anchorBufferRef.current.trim();
+        anchorBufferRef.current = '';
+        anchorLastTranscript.current = '';
         anchorPhaseRef.current = 'sending';
-        ExpoSpeechRecognitionModule.abort();
+        ExpoSpeechRecognitionModule.stop();
+        if (text) {
+          sendAnchorText(text);
+        } else {
+          anchorPhaseRef.current = 'waiting';
+          setStatus('listening');
+          startSttSession();
+        }
       }
     }
   });
 
   useSpeechRecognitionEvent('end', () => {
     if (!anchorVadActiveRef.current) return;
-    const phase = anchorPhaseRef.current;
-
-    if (phase === 'sending') {
-      const text = anchorBufferRef.current.trim();
-      anchorBufferRef.current = '';
-      anchorLastTranscript.current = '';
-      anchorSkipSessionRef.current = false;
-      anchorPhaseRef.current = 'waiting';
-      if (text) sendAnchorText(text);
-      else { setStatus('listening'); setTimeout(() => startSttSession(), 200); }
-      return;
-    }
-
-    if (!anchorSkipSessionRef.current && anchorLastTranscript.current && phase === 'accumulating') {
+    if (anchorProcessingRef.current) return;
+    if (anchorPhaseRef.current === 'sending') return;
+    // accumulate last transcript if isFinal didn't fire
+    if (anchorLastTranscript.current && anchorPhaseRef.current === 'accumulating') {
       anchorBufferRef.current += (anchorBufferRef.current ? ' ' : '') + anchorLastTranscript.current;
+      anchorLastTranscript.current = '';
     }
-    anchorSkipSessionRef.current = false;
-    anchorLastTranscript.current = '';
+    // fallback restart if continuous didn't keep session alive
     setTimeout(() => startSttSession(), 200);
   });
 
@@ -1939,6 +1947,7 @@ export default function VoiceScreen() {
                     }
                   </View>
                 </View>
+
               </View>
             )}
           </View>
