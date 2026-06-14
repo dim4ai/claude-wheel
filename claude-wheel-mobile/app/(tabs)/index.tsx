@@ -203,6 +203,7 @@ export default function VoiceScreen() {
 
   const [status, setStatus]       = useState<Status>('idle');
   const [anchorVadMode, setAnchorVadMode] = useState(false);
+  const [anchorTranscript, setAnchorTranscript] = useState('');
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [messages, setMessages] = useState<Message[]>([]);
   const [error, setError]       = useState('');
@@ -1153,6 +1154,7 @@ export default function VoiceScreen() {
     const transcript = (event.results[0]?.transcript ?? '').toLowerCase();
     if (!transcript) return;
     anchorLastSpeechRef.current = Date.now();
+    setAnchorTranscript(transcript);
     if (anchorPhaseRef.current === 'waiting') {
       if (transcript.includes(WAKE_WORD)) {
         anchorPhaseRef.current = 'transitioning';
@@ -1901,13 +1903,18 @@ export default function VoiceScreen() {
             )}
 
             {!keyboardVisible && anchorVadMode && (
-              <View style={[styles.vadRow, { marginBottom: insets.bottom + 1 }]}>
-                <View style={[styles.vadIndicator, { backgroundColor: buttonColor, flex: 1 }]}>
-                  {status === 'processing'
-                    ? <ActivityIndicator color="#fff" />
-                    : <Text style={styles.buttonText}>{buttonLabel}</Text>
-                  }
+              <View style={{ marginBottom: insets.bottom + 1 }}>
+                <View style={[styles.vadRow, { marginBottom: 4 }]}>
+                  <View style={[styles.vadIndicator, { backgroundColor: buttonColor, flex: 1 }]}>
+                    {status === 'processing'
+                      ? <ActivityIndicator color="#fff" />
+                      : <Text style={styles.buttonText}>{buttonLabel}</Text>
+                    }
+                  </View>
                 </View>
+                {!!anchorTranscript && (
+                  <Text style={{ color: '#888', fontSize: 12, textAlign: 'center', marginHorizontal: 20 }} numberOfLines={2}>{anchorTranscript}</Text>
+                )}
               </View>
             )}
           </View>
