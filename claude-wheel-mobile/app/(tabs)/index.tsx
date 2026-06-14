@@ -32,8 +32,8 @@ const semverLt = (a: string, b: string) => {
   for (let i = 0; i < 3; i++) { if ((pa[i]??0) < (pb[i]??0)) return true; if ((pa[i]??0) > (pb[i]??0)) return false; }
   return false;
 };
-const WAKE_WORD = 'алло привет';
-const END_WORD = 'покедово';
+const DEFAULT_WAKE_WORD = 'алло привет';
+const DEFAULT_END_WORD = 'покедово';
 const MAX_MESSAGES = 100;
 const TERMINAL_LINES = 10;      // default lines per page in terminal
 
@@ -55,6 +55,8 @@ const STORAGE_KEYS = {
   language:        'setting_language',
   ttsEnabled:      'setting_tts_enabled',
   anchorVadMode:   'setting_anchor_vad_mode',
+  wakeWord:        'setting_wake_word',
+  endWord:         'setting_end_word',
   currentSession:  'setting_current_session',
   sessionLocking:  'setting_session_locking',
   hapticOnHang:    'setting_haptic_on_hang',
@@ -204,6 +206,10 @@ export default function VoiceScreen() {
   const [status, setStatus]       = useState<Status>('idle');
   const [anchorVadMode, setAnchorVadMode] = useState(false);
   const [anchorTranscript, setAnchorTranscript] = useState('');
+  const [wakeWord, setWakeWord] = useState(DEFAULT_WAKE_WORD);
+  const [endWord, setEndWord]   = useState(DEFAULT_END_WORD);
+  const wakeWordRef = useRef(DEFAULT_WAKE_WORD);
+  const endWordRef  = useRef(DEFAULT_END_WORD);
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [messages, setMessages] = useState<Message[]>([]);
   const [error, setError]       = useState('');
@@ -480,7 +486,7 @@ export default function VoiceScreen() {
   useEffect(() => {
     if (pinMode !== 'unlocked') return;
     async function loadSettings() {
-      const [url, apiKey, groq, projDir, lang, tts, haptic, gender, lockTimeoutVal, savedSession, sessionLockingVal, hapticOnHangVal, hangTimeoutVal, fontSizeVal, terminalLinesVal, anchorVad] = await Promise.all([
+      const [url, apiKey, groq, projDir, lang, tts, haptic, gender, lockTimeoutVal, savedSession, sessionLockingVal, hapticOnHangVal, hangTimeoutVal, fontSizeVal, terminalLinesVal, anchorVad, savedWakeWord, savedEndWord] = await Promise.all([
         AsyncStorage.getItem(STORAGE_KEYS.serverUrl),
         AsyncStorage.getItem(STORAGE_KEYS.serverApiKey),
         AsyncStorage.getItem(STORAGE_KEYS.groqApiKey),
@@ -497,6 +503,8 @@ export default function VoiceScreen() {
         AsyncStorage.getItem(STORAGE_KEYS.fontSize),
         AsyncStorage.getItem(STORAGE_KEYS.terminalLines),
         AsyncStorage.getItem(STORAGE_KEYS.anchorVadMode),
+        AsyncStorage.getItem(STORAGE_KEYS.wakeWord),
+        AsyncStorage.getItem(STORAGE_KEYS.endWord),
       ]);
       if (url)     setServerUrl(decrypt(url));
       if (apiKey)  setServerApiKey(decrypt(apiKey));
@@ -514,6 +522,8 @@ export default function VoiceScreen() {
       if (fontSizeVal !== null)     { const v = parseInt(fontSizeVal) || 15; setFontSize(v); setFontSizeText(String(v)); }
       if (terminalLinesVal !== null) { const v = parseInt(terminalLinesVal) || 10; setTerminalLines(v); setTerminalLinesText(String(v)); }
       if (anchorVad === 'true') setAnchorVadMode(true);
+      if (savedWakeWord) { setWakeWord(savedWakeWord); wakeWordRef.current = savedWakeWord; }
+      if (savedEndWord)  { setEndWord(savedEndWord);   endWordRef.current  = savedEndWord; }
 
       // Restore open shell sessions, verify they still exist
       const savedShell = await AsyncStorage.getItem(STORAGE_KEYS.openShellSessions);
@@ -1058,7 +1068,7 @@ export default function VoiceScreen() {
     ExpoSpeechRecognitionModule.start({
       lang: 'ru-RU',
       interimResults: true,
-      contextualStrings: anchorPhaseRef.current === 'waiting' ? [WAKE_WORD] : [END_WORD],
+      contextualStrings: anchorPhaseRef.current === 'waiting' ? [wakeWordRef.current] : [endWordRef.current],
     });
   }
 
@@ -1125,7 +1135,7 @@ export default function VoiceScreen() {
     setAnchorTranscript(transcript);
 
     if (anchorPhaseRef.current === 'waiting') {
-      if (transcript.includes(WAKE_WORD)) {
+      if (transcript.includes(wakeWordRef.current)) {
         anchorPhaseRef.current = 'accumulating';
         anchorBufferRef.current = '';
         anchorStartTimeRef.current = Date.now();
@@ -1139,9 +1149,9 @@ export default function VoiceScreen() {
         ExpoSpeechRecognitionModule.abort();
         return;
       }
-      if (transcript.includes(END_WORD)) {
+      if (transcript.includes(endWordRef.current)) {
         // Take text up to end word from this session
-        const endIdx = transcript.indexOf(END_WORD);
+        const endIdx = transcript.indexOf(endWordRef.current);
         const before = transcript.slice(0, endIdx).trim();
         if (before) anchorBufferRef.current += (anchorBufferRef.current ? ' ' : '') + before;
         anchorSkipSessionRef.current = true; // already added what we need
@@ -1215,8 +1225,8 @@ export default function VoiceScreen() {
 
   const buttonLabel = anchorVadMode ? {
     idle:       '⏸ VAD paused',
-    listening:  '👂 Say "алло привет"...',
-    recording:  '🔴 Speak — say "покедово" to send',
+    listening:  `👂 Say "${wakeWord}"...`,
+    recording:  `🔴 Speak — say "${endWord}" to send`,
     processing: '⏳ Processing...',
     speaking:   '🔊 Speaking...',
   }[status] : {
@@ -1416,11 +1426,29 @@ export default function VoiceScreen() {
                 </View>
               </View>
               <View style={styles.settingRow}>
-                <Text style={[styles.settingLabel, { flex: 1 }]}>Anchor VAD{'\n'}
-                  <Text style={{ color: '#888', fontSize: 12 }}>Wake: "алло привет" · End: "алло пока"</Text>
-                </Text>
+                <Text style={styles.settingLabel}>Anchor VAD</Text>
                 <Switch value={anchorVadMode} onValueChange={toggleAnchorVad} thumbColor={anchorVadMode ? '#4AE27A' : '#888'} />
               </View>
+              <Text style={styles.inputLabel}>Wake phrase</Text>
+              <TextInput
+                style={styles.input}
+                value={wakeWord}
+                onChangeText={v => { setWakeWord(v); wakeWordRef.current = v.toLowerCase().trim(); }}
+                onEndEditing={() => AsyncStorage.setItem(STORAGE_KEYS.wakeWord, wakeWord.toLowerCase().trim()).catch(() => {})}
+                placeholder={DEFAULT_WAKE_WORD}
+                placeholderTextColor="#555"
+                autoCapitalize="none"
+              />
+              <Text style={styles.inputLabel}>End phrase</Text>
+              <TextInput
+                style={styles.input}
+                value={endWord}
+                onChangeText={v => { setEndWord(v); endWordRef.current = v.toLowerCase().trim(); }}
+                onEndEditing={() => AsyncStorage.setItem(STORAGE_KEYS.endWord, endWord.toLowerCase().trim()).catch(() => {})}
+                placeholder={DEFAULT_END_WORD}
+                placeholderTextColor="#555"
+                autoCapitalize="none"
+              />
               <TouchableOpacity style={styles.settingRow} onPress={() => setHapticOpen(v => !v)}>
                 <Text style={styles.settingLabel}>Haptic feedback</Text>
                 <Text style={styles.settingLabel}>{HAPTIC_OPTIONS.find(o => o.value === hapticStyle)?.label} {hapticOpen ? '▲' : '▼'}</Text>
