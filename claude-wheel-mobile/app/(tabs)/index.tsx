@@ -1060,7 +1060,6 @@ export default function VoiceScreen() {
       lang: 'ru-RU',
       continuous: true,
       interimResults: true,
-      requiresOnDeviceRecognition: true,
       contextualStrings: [WAKE_WORD],
     });
   }
@@ -1076,7 +1075,6 @@ export default function VoiceScreen() {
       lang: 'ru-RU',
       continuous: true,
       interimResults: true,
-      requiresOnDeviceRecognition: true,
       contextualStrings: [END_WORD],
       recordingOptions: { persist: true },
     });
