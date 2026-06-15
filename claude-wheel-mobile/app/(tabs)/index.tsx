@@ -20,6 +20,7 @@ import CryptoJS from 'crypto-js';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
+import { VolumeManager, RINGER_MODE } from 'react-native-volume-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
@@ -973,6 +974,7 @@ export default function VoiceScreen() {
   const anchorProcessingRef   = useRef(false);    // true while sendAnchorText is running
   const anchorLastStartRef    = useRef(0);         // timestamp of last startSttSession call
   const anchorKeyboardOpenRef = useRef(false);     // true while keyboard is visible
+  const anchorSavedRingerRef  = useRef<number | null>(null); // ringer mode before VAD (null = wasn't changed)
   const anchorManualSendRef   = useRef(false);     // true while sendTextContent/sendRecording is running
   const anchorTimeoutRef      = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -1174,11 +1176,22 @@ export default function VoiceScreen() {
       anchorBufferRef.current = '';
       anchorLastTranscript.current = '';
       setStatus('listening');
+      VolumeManager.getRingerMode().then((mode) => {
+        if (mode !== RINGER_MODE.silent && mode !== RINGER_MODE.vibrate) {
+          VolumeManager.getVolume({ type: 'system' }).then(({ volume }) => {
+            anchorSavedRingerRef.current = volume;
+            VolumeManager.setVolume(0, { type: 'system', showUI: false }).catch(() => {});
+          }).catch(() => {});
+        } else {
+          anchorSavedRingerRef.current = null; // already silent/vibrate, don't touch
+        }
+      }).catch(() => {});
       startSttSession();
     } else {
       anchorVadActiveRef.current = false;
       if (anchorTimeoutRef.current) { clearInterval(anchorTimeoutRef.current); anchorTimeoutRef.current = null; }
       ExpoSpeechRecognitionModule.abort();
+      if (anchorSavedRingerRef.current !== null) VolumeManager.setVolume(anchorSavedRingerRef.current, { type: 'system', showUI: false }).catch(() => {});
       setStatus('idle');
     }
   }
@@ -1197,7 +1210,8 @@ export default function VoiceScreen() {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         setStatus('recording');
       }
-    } else if (anchorPhaseRef.current === 'accumulating') {
+    }
+    if (anchorPhaseRef.current === 'accumulating') {
       // detect utterance boundary: new transcript doesn't start with previous
       const prev = anchorLastTranscript.current;
       if (prev && !transcript.startsWith(prev.slice(0, Math.min(prev.length, 20)))) {
@@ -1215,23 +1229,32 @@ export default function VoiceScreen() {
         if (text) sendAnchorText(text);
         return;
       }
-      if (Date.now() - anchorStartTimeRef.current > 1500 && fuzzyIncludes(transcript, endWordRef.current)) {
-        const endIdx = transcript.indexOf(endWordRef.current);
-        const beforeRaw = transcript.slice(0, endIdx).trim();
-        const before = beforeRaw.startsWith(wakeWordRef.current) ? beforeRaw.slice(wakeWordRef.current.length).trim() : beforeRaw;
-        if (before) anchorBufferRef.current += (anchorBufferRef.current ? ' ' : '') + before;
-        const text = anchorBufferRef.current.trim();
-        anchorBufferRef.current = '';
-        anchorLastTranscript.current = '';
-        anchorPhaseRef.current = 'sending';
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        ExpoSpeechRecognitionModule.stop();
-        if (text) {
-          sendAnchorText(text);
-        } else {
-          anchorPhaseRef.current = 'waiting';
-          setStatus('listening');
-          setTimeout(() => startSttSession(), 1000);
+      if (fuzzyIncludes(transcript, endWordRef.current)) {
+        // if buffer is empty, wake word may be in this same transcript — skip past it
+        // to avoid matching it as the end word (handles same wake/end word case)
+        const hasContent = anchorBufferRef.current.trim().length > 0;
+        const wakeIdx = transcript.indexOf(wakeWordRef.current);
+        const searchFrom = (!hasContent && wakeIdx >= 0) ? wakeIdx + wakeWordRef.current.length : 0;
+        const endIdx = transcript.indexOf(endWordRef.current, searchFrom);
+        if (endIdx >= 0) {
+          const beforeRaw = transcript.slice(searchFrom, endIdx).trim();
+          const before = (searchFrom === 0 && beforeRaw.startsWith(wakeWordRef.current))
+            ? beforeRaw.slice(wakeWordRef.current.length).trim()
+            : beforeRaw;
+          if (before) anchorBufferRef.current += (anchorBufferRef.current ? ' ' : '') + before;
+          const text = anchorBufferRef.current.trim();
+          anchorBufferRef.current = '';
+          anchorLastTranscript.current = '';
+          anchorPhaseRef.current = 'sending';
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          ExpoSpeechRecognitionModule.stop();
+          if (text) {
+            sendAnchorText(text);
+          } else {
+            anchorPhaseRef.current = 'waiting';
+            setStatus('listening');
+            setTimeout(() => startSttSession(), 1000);
+          }
         }
       }
     }
