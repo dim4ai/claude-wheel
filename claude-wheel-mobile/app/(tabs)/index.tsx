@@ -21,6 +21,7 @@ import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { VolumeManager, RINGER_MODE } from 'react-native-volume-manager';
+import { startBluetoothSco, stopBluetoothSco } from 'bluetooth-sco';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
@@ -1186,12 +1187,14 @@ export default function VoiceScreen() {
           anchorSavedRingerRef.current = null; // already silent/vibrate, don't touch
         }
       }).catch(() => {});
+      try { startBluetoothSco(); } catch (e) {}
       startSttSession();
     } else {
       anchorVadActiveRef.current = false;
       if (anchorTimeoutRef.current) { clearInterval(anchorTimeoutRef.current); anchorTimeoutRef.current = null; }
       ExpoSpeechRecognitionModule.abort();
       if (anchorSavedRingerRef.current !== null) VolumeManager.setVolume(anchorSavedRingerRef.current, { type: 'system', showUI: false }).catch(() => {});
+      try { stopBluetoothSco(); } catch (e) {}
       setStatus('idle');
     }
   }
@@ -1215,7 +1218,8 @@ export default function VoiceScreen() {
       // detect utterance boundary: new transcript doesn't start with previous
       const prev = anchorLastTranscript.current;
       if (prev && !transcript.startsWith(prev.slice(0, Math.min(prev.length, 20)))) {
-        const stripped = prev.startsWith(wakeWordRef.current) ? prev.slice(wakeWordRef.current.length).trim() : prev;
+        let stripped = prev.startsWith(wakeWordRef.current) ? prev.slice(wakeWordRef.current.length).trim() : prev;
+        if (stripped.endsWith(endWordRef.current)) stripped = stripped.slice(0, stripped.length - endWordRef.current.length).trim();
         if (stripped) anchorBufferRef.current += (anchorBufferRef.current ? ' ' : '') + stripped;
       }
       anchorLastTranscript.current = transcript;
