@@ -967,7 +967,9 @@ export default function VoiceScreen() {
 
   // ── Anchor VAD refs ───────────────────────────────────────────────────────
   const anchorVadActiveRef    = useRef(false);
-  const anchorPhaseRef        = useRef<'waiting' | 'accumulating' | 'sending'>('waiting');
+  const anchorPhaseRef        = useRef<'accumulating' | 'sending'>('accumulating');
+  const anchorOpenFoundRef    = useRef(false);      // true after open word found (start beep played)
+  const anchorJustSentRef     = useRef(false);      // true after send until next phrase boundary (blocks trailing results)
   const anchorStartTimeRef    = useRef(0);
   const anchorBufferRef       = useRef('');       // accumulated text after wake word
   const anchorLastTranscript  = useRef('');       // last STT result in current session
@@ -979,6 +981,24 @@ export default function VoiceScreen() {
   const anchorManualSendRef   = useRef(false);     // true while sendTextContent/sendRecording is running
   const anchorTimeoutRef      = useRef<ReturnType<typeof setInterval> | null>(null);
 
+
+  // ── Beep ───────────────────────────────────────────────────────────────────
+  async function playBeep(type: 'start' | 'end' = 'start') {
+    try {
+      const boost = type === 'end' ? 0.3 : 0.2;
+      const { volume: current } = await VolumeManager.getVolume({ type: 'music' });
+      VolumeManager.setVolume(Math.min(1.0, current + boost), { type: 'music', showUI: false }).catch(() => {});
+      const file = type === 'end' ? require('../../assets/beep_end.mp3') : require('../../assets/beep.mp3');
+      const { sound } = await Audio.Sound.createAsync(file, { volume: 1.0 });
+      await sound.playAsync();
+      sound.setOnPlaybackStatusUpdate((s) => {
+        if (s.isLoaded && s.didJustFinish) {
+          VolumeManager.setVolume(current, { type: 'music', showUI: false }).catch(() => {});
+          sound.unloadAsync();
+        }
+      });
+    } catch (e) { showError('beep: ' + e); }
+  }
 
   // ── TTS ────────────────────────────────────────────────────────────────────
   async function speak(text: string): Promise<void> {
@@ -1125,7 +1145,7 @@ export default function VoiceScreen() {
       lang: 'ru-RU',
       interimResults: true,
       continuous: true,
-      contextualStrings: anchorPhaseRef.current === 'waiting' ? [wakeWordRef.current] : [endWordRef.current],
+      contextualStrings: anchorOpenFoundRef.current ? [endWordRef.current] : [wakeWordRef.current],
     });
   }
 
@@ -1157,7 +1177,10 @@ export default function VoiceScreen() {
       anchorProcessingRef.current = false;
       if (anchorVadActiveRef.current) {
         anchorBufferRef.current = '';
-        anchorPhaseRef.current = 'waiting';
+        anchorLastTranscript.current = '';
+        anchorOpenFoundRef.current = false;
+        anchorJustSentRef.current = false;
+        anchorPhaseRef.current = 'accumulating';
         setAnchorTranscript('');
         setStatus('listening');
         if (!anchorKeyboardOpenRef.current) setTimeout(() => startSttSession(), 300);
@@ -1173,7 +1196,9 @@ export default function VoiceScreen() {
     if (value) {
       await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       anchorVadActiveRef.current = true;
-      anchorPhaseRef.current = 'waiting';
+      anchorPhaseRef.current = 'accumulating';
+      anchorOpenFoundRef.current = false;
+      anchorJustSentRef.current = false;
       anchorBufferRef.current = '';
       anchorLastTranscript.current = '';
       setStatus('listening');
@@ -1204,62 +1229,60 @@ export default function VoiceScreen() {
     if (anchorKeyboardOpenRef.current) return;
     const transcript = (event.results[0]?.transcript ?? '').toLowerCase();
     if (!transcript) return;
-    if (anchorPhaseRef.current === 'waiting') {
-      if (fuzzyIncludes(transcript, wakeWordRef.current)) {
-        anchorPhaseRef.current = 'accumulating';
-        anchorBufferRef.current = '';
-        anchorLastTranscript.current = '';
+    if (anchorPhaseRef.current !== 'accumulating') return;
+    const prev = anchorLastTranscript.current;
+    anchorLastTranscript.current = transcript;
+    // граница фразы — сначала фиксируем prev в буфер
+    if (prev && !transcript.startsWith(prev.slice(0, Math.min(prev.length, 20)))) {
+      if (anchorJustSentRef.current) {
+        anchorJustSentRef.current = false;
+      } else {
+        anchorBufferRef.current += (anchorBufferRef.current ? ' ' : '') + prev;
+      }
+    }
+    const fullText = (anchorBufferRef.current + ' ' + transcript).trim();
+    // open: ищем в fullText, блокируем пока флаг стоит
+    if (!anchorOpenFoundRef.current && !anchorJustSentRef.current) {
+      if (fullText.indexOf(wakeWordRef.current) >= 0) {
+        anchorOpenFoundRef.current = true;
         anchorStartTimeRef.current = Date.now();
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        playBeep();
         setStatus('recording');
       }
     }
-    if (anchorPhaseRef.current === 'accumulating') {
-      // detect utterance boundary: new transcript doesn't start with previous
-      const prev = anchorLastTranscript.current;
-      if (prev && !transcript.startsWith(prev.slice(0, Math.min(prev.length, 20)))) {
-        let stripped = prev.startsWith(wakeWordRef.current) ? prev.slice(wakeWordRef.current.length).trim() : prev;
-        if (stripped.endsWith(endWordRef.current)) stripped = stripped.slice(0, stripped.length - endWordRef.current.length).trim();
-        if (stripped) anchorBufferRef.current += (anchorBufferRef.current ? ' ' : '') + stripped;
-      }
-      anchorLastTranscript.current = transcript;
+    // close: ищем в fullText на каждом result
+    if (anchorOpenFoundRef.current) {
       if (Date.now() - anchorStartTimeRef.current > 5 * 60_000) {
-        const text = anchorBufferRef.current.trim();
         anchorBufferRef.current = '';
         anchorLastTranscript.current = '';
+        anchorOpenFoundRef.current = false;
+        anchorJustSentRef.current = true;
         anchorPhaseRef.current = 'sending';
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         ExpoSpeechRecognitionModule.stop();
-        if (text) sendAnchorText(text);
+        playBeep('end');
+        sendAnchorText(fullText);
         return;
       }
-      if (fuzzyIncludes(transcript, endWordRef.current)) {
-        // if buffer is empty, wake word may be in this same transcript — skip past it
-        // to avoid matching it as the end word (handles same wake/end word case)
-        const hasContent = anchorBufferRef.current.trim().length > 0;
-        const wakeIdx = transcript.indexOf(wakeWordRef.current);
-        const searchFrom = (!hasContent && wakeIdx >= 0) ? wakeIdx + wakeWordRef.current.length : 0;
-        const endIdx = transcript.indexOf(endWordRef.current, searchFrom);
-        if (endIdx >= 0) {
-          const beforeRaw = transcript.slice(searchFrom, endIdx).trim();
-          const before = (searchFrom === 0 && beforeRaw.startsWith(wakeWordRef.current))
-            ? beforeRaw.slice(wakeWordRef.current.length).trim()
-            : beforeRaw;
-          if (before) anchorBufferRef.current += (anchorBufferRef.current ? ' ' : '') + before;
-          const text = anchorBufferRef.current.trim();
-          anchorBufferRef.current = '';
-          anchorLastTranscript.current = '';
+      const openIdx = fullText.indexOf(wakeWordRef.current);
+      const closeIdx = openIdx >= 0 ? fullText.indexOf(endWordRef.current, openIdx + wakeWordRef.current.length) : -1;
+      if (closeIdx >= 0) {
+        const text = fullText.slice(openIdx + wakeWordRef.current.length, closeIdx).trim();
+        anchorBufferRef.current = '';
+        anchorLastTranscript.current = '';
+        anchorOpenFoundRef.current = false;
+        anchorJustSentRef.current = true;
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        playBeep('end');
+        if (text) {
           anchorPhaseRef.current = 'sending';
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           ExpoSpeechRecognitionModule.stop();
-          if (text) {
-            sendAnchorText(text);
-          } else {
-            anchorPhaseRef.current = 'waiting';
-            setStatus('listening');
-            setTimeout(() => startSttSession(), 1000);
-          }
+          sendAnchorText(text);
+        } else {
+          ExpoSpeechRecognitionModule.stop();
         }
+        return;
       }
     }
   });
