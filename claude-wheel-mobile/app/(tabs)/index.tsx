@@ -27,15 +27,15 @@ import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const APP_VERSION = '1.1.2';
+const APP_VERSION = '1.3';
 const MIN_SERVER_VERSION = '1.1.2';
 const semverLt = (a: string, b: string) => {
   const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
   for (let i = 0; i < 3; i++) { if ((pa[i]??0) < (pb[i]??0)) return true; if ((pa[i]??0) > (pb[i]??0)) return false; }
   return false;
 };
-const DEFAULT_WAKE_WORD = 'алло привет';
-const DEFAULT_END_WORD = 'алло пока';
+const DEFAULT_WAKE_WORD = '';
+const DEFAULT_END_WORD = '';
 
 function levenshtein(a: string, b: string): number {
   const m = a.length, n = b.length;
@@ -718,6 +718,17 @@ export default function VoiceScreen() {
         setCurrentSession(name);
         AsyncStorage.setItem(STORAGE_KEYS.currentSession, encrypt(name)).catch(() => {});
         setSessionsOpen(false);
+        if (anchorVadActiveRef.current) {
+          anchorPhaseRef.current = 'accumulating';
+          anchorOpenFoundRef.current = false;
+          anchorJustSentRef.current = false;
+          anchorBufferRef.current = '';
+          anchorLastTranscript.current = '';
+          setAnchorTranscript('');
+          setStatus('listening');
+          ExpoSpeechRecognitionModule.abort();
+          setTimeout(() => startSttSession(), 300);
+        }
       } catch {}
     };
     if (!sessionLocking) {
@@ -1280,6 +1291,7 @@ export default function VoiceScreen() {
           ExpoSpeechRecognitionModule.stop();
           sendAnchorText(text);
         } else {
+          setStatus('listening');
           ExpoSpeechRecognitionModule.stop();
         }
         return;
