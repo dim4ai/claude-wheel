@@ -27,7 +27,7 @@ import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.2.0';
 const MIN_SERVER_VERSION = '1.1.2';
 const semverLt = (a: string, b: string) => {
   const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
