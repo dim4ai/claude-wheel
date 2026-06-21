@@ -1,0 +1,9 @@
+{
+  "name": "bluetooth-sco",
+  "version": "1.0.0",
+  "description": "Local module for Bluetooth SCO audio routing",
+  "main": "index.ts",
+  "android": {
+    "gradlePath": "android/build.gradle"
+  }
+}

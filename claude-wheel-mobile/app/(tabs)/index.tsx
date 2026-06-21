@@ -27,7 +27,7 @@ import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const APP_VERSION = '1.3';
+const APP_VERSION = '1.3.0';
 const MIN_SERVER_VERSION = '1.1.2';
 const semverLt = (a: string, b: string) => {
   const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
@@ -1243,7 +1243,7 @@ export default function VoiceScreen() {
     if (anchorPhaseRef.current !== 'accumulating') return;
     const prev = anchorLastTranscript.current;
     anchorLastTranscript.current = transcript;
-    // граница фразы — сначала фиксируем prev в буфер
+    // utterance boundary — commit prev to buffer first
     if (prev && !transcript.startsWith(prev.slice(0, Math.min(prev.length, 20)))) {
       if (anchorJustSentRef.current) {
         anchorJustSentRef.current = false;
@@ -1252,7 +1252,7 @@ export default function VoiceScreen() {
       }
     }
     const fullText = (anchorBufferRef.current + ' ' + transcript).trim();
-    // open: ищем в fullText, блокируем пока флаг стоит
+    // open: search in fullText, blocked while justSent flag is set
     if (!anchorOpenFoundRef.current && !anchorJustSentRef.current) {
       if (fullText.indexOf(wakeWordRef.current) >= 0) {
         anchorOpenFoundRef.current = true;
@@ -1262,7 +1262,7 @@ export default function VoiceScreen() {
         setStatus('recording');
       }
     }
-    // close: ищем в fullText на каждом result
+    // close: search in fullText on every result
     if (anchorOpenFoundRef.current) {
       if (Date.now() - anchorStartTimeRef.current > 5 * 60_000) {
         anchorBufferRef.current = '';
@@ -1350,7 +1350,7 @@ export default function VoiceScreen() {
   const buttonLabel = anchorVadMode ? {
     idle:       '⏸ VAD paused',
     listening:  `👂 Say "${wakeWord}"...`,
-    recording:  `🔴 Speak — say "${endWord}" to send`,
+    recording:  `Say "${endWord}" to send`,
     processing: '⏳ Processing...',
     speaking:   '🔊 Speaking...',
   }[status] : {
@@ -1423,6 +1423,9 @@ export default function VoiceScreen() {
           }
         </TouchableOpacity>
         <View style={styles.settingsBtnRow}>
+          <TouchableOpacity style={styles.settingsBtn} onPress={() => toggleAnchorVad(!anchorVadMode)}>
+            <Text style={styles.settingsBtnText}>{anchorVadMode ? '🎤' : '👆'}</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={styles.settingsBtn} onPress={() => { setTtsEnabled(v => { const next = !v; saveSettings({ ttsEnabled: next }); return next; }); }}>
             <Text style={styles.settingsBtnText}>{ttsEnabled ? '🔊' : '🔇'}</Text>
           </TouchableOpacity>
@@ -1550,7 +1553,7 @@ export default function VoiceScreen() {
                 </View>
               </View>
               <View style={styles.settingRow}>
-                <Text style={styles.settingLabel}>Anchor VAD</Text>
+                <Text style={styles.settingLabel}>VAD</Text>
                 <Switch value={anchorVadMode} onValueChange={toggleAnchorVad} thumbColor={anchorVadMode ? '#4AE27A' : '#888'} />
               </View>
               <Text style={styles.inputLabel}>Wake phrase</Text>
@@ -2039,6 +2042,23 @@ export default function VoiceScreen() {
                       : <Text style={styles.buttonText}>{buttonLabel}</Text>
                     }
                   </View>
+                  {status === 'recording' && (
+                    <TouchableOpacity
+                      onPress={() => {
+                        anchorOpenFoundRef.current = false;
+                        anchorBufferRef.current = '';
+                        anchorLastTranscript.current = '';
+                        anchorJustSentRef.current = false;
+                        setAnchorTranscript('');
+                        setStatus('listening');
+                        ExpoSpeechRecognitionModule.abort();
+                        setTimeout(() => startSttSession(), 300);
+                      }}
+                      style={{ backgroundColor: '#8B3A3A', borderRadius: 999, width: 52, height: 52, marginLeft: 8, justifyContent: 'center', alignItems: 'center' }}
+                    >
+                      <Text style={{ color: '#fff', fontSize: 18, fontWeight: 'bold' }}>✕</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
 
               </View>

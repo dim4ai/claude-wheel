@@ -129,7 +129,12 @@
           <li><a href="#settings-language">Language</a></li>
         </ul>
       </li>
-      <li><a href="#voice">Voice input</a></li>
+      <li><a href="#voice">Voice input</a>
+        <ul style="padding-left:18px; line-height:1.8;">
+          <li><a href="#manual">Manual mode</a></li>
+          <li><a href="#vad">VAD</a></li>
+        </ul>
+      </li>
       <li><a href="#text-input">Text input</a></li>
       <li><a href="#terminal">Terminal</a></li>
       <li><a href="#sessions">Claude session management</a></li>
@@ -152,11 +157,12 @@
   <h3 id="main-screen">Main screen</h3>
 
   <div class="screen reverse">
-    <img src="img/1780480315772.jpg" alt="Main screen">
+    <img src="img/1782076960349.jpg" alt="Main screen">
     <div class="screen-text">
       <p>The main screen consists of several zones:</p>
       <ul>
         <li><strong>Header</strong> — app name and current session</li>
+        <li><strong>🎤 / 👆</strong> — quick toggle for VAD: 🎤 voice mode (VAD), 👆 manual mode</li>
         <li><strong>🔊 / 🔇</strong> — quick toggle for response text-to-speech</li>
         <li><strong>⚙️</strong> — settings button in the top-right corner; current time is displayed below it</li>
         <li><strong>🟢 / 🟠 / 🔴 indicator</strong> next to the gear — server status:<br>🟢 available, 🟠 server version outdated (update needed), 🔴 unavailable</li>
@@ -177,7 +183,7 @@
       <p>Settings are opened with the ⚙️ button in the top-right corner. Divided into five sections:</p>
       <ul>
         <li><strong>General</strong> — request locking, haptic feedback and hang timeout, font size, terminal height, working directory</li>
-        <li><strong>Audio</strong> — speech recognition (VAD, noise threshold, silence pause), text-to-speech (TTS, voice), haptic on record</li>
+        <li><strong>Audio</strong> — hands-free voice input (VAD), text-to-speech, haptic</li>
         <li><strong>Security</strong> — auto-lock timer and password change</li>
         <li><strong>Connection</strong> — server address, API keys</li>
         <li><strong>Language</strong> — language for speech recognition and response synthesis</li>
@@ -188,6 +194,7 @@
   <!-- ── Settings General ── -->
   <h2 id="settings-general">Settings — General</h2>
   <div class="screen">
+    <img src="img/1782076960343.jpg" alt="General settings">
     <div class="screen-text">
       <h3>Request locking</h3>
       <p>Enabled by default. In this mode, requests to a single session are processed strictly one at a time — the next request waits until the previous one receives a response.</p>
@@ -214,7 +221,7 @@
   <!-- ── Settings Audio ── -->
   <h2 id="audio-settings">Settings — Audio</h2>
   <div class="screen">
-    <img src="img/1780480315781.jpg" alt="Audio settings">
+    <img src="img/1782076960339.jpg" alt="Audio settings">
     <div class="screen-text">
       <h3>Text-to-speech</h3>
       <p>Enable or disable reading Claude's responses aloud. Also available as a quick toggle with the 🔊/🔇 button in the main screen header.</p>
@@ -222,19 +229,17 @@
       <h3>Voice gender</h3>
       <p>Choose the voice for reading responses: ♀ female or ♂ male. Applies to all languages.</p>
 
-      <h3>VAD (auto-send)</h3>
-      <p>Automatic voice activity detection mode. The app detects the start of speech and sends the message after a pause — no button press needed.</p>
+      <h3>VAD</h3>
+      <p>Hands-free voice input mode. Also available as a quick toggle with the 🎤/👆 button in the main screen header. More details in the <a href="#vad">VAD</a> section.</p>
 
-      <h3>Noise threshold</h3>
-      <p>The sound level bar shows the current microphone level — it is active when the Audio section is open. The white vertical line is the threshold: everything above it is treated as voice and triggers recording in VAD mode.</p>
-      <p>Drag the line with your finger to adjust the threshold. In silence the bar is empty (as in the screenshot). When speaking — the bar fills up: green if below the threshold, red if above.</p>
-      <p>Adjust so that background noise stays to the left of the line, and your voice goes to the right.</p>
+      <h3>Wake phrase</h3>
+      <p>A word or phrase that starts recording. Choose something the STT reliably recognises in your voice.</p>
 
-      <h3>Silence before send</h3>
-      <p>Silence pause in milliseconds after which VAD sends the recording. Default is 2500 ms (2.5 seconds).</p>
+      <h3>End phrase</h3>
+      <p>A word or phrase that ends recording and sends the message.</p>
 
       <h3>Haptic feedback</h3>
-      <p>Haptic feedback at the moment voice recording starts: Off / Light / Medium / Heavy.</p>
+      <p>Haptic feedback at the start and end of recording in VAD mode: Off / Light / Medium / Heavy.</p>
     </div>
   </div>
 
@@ -300,7 +305,7 @@
   <!-- ── Voice input ── -->
   <h2 id="voice">Voice input</h2>
 
-  <h3>Manual mode</h3>
+  <h3 id="manual">Manual mode</h3>
   <p>By default the app works in manual mode. Full cycle of one request:</p>
   <div style="display:flex; gap:12px; justify-content:center; margin:24px 0;">
     <img src="img/1780480315762.jpg" style="width:28%; border-radius:12px; border:1px solid #2a2a4e;" alt="Speaking">
@@ -318,15 +323,28 @@
 
   <div class="note">During processing or playback the ↑ button in the input field turns into <strong>✕</strong> — tap it to cancel the request.</div>
 
-  <h3>VAD mode — automatic voice activity detection</h3>
-  <p>In Audio settings enable the <strong>VAD (auto-send)</strong> toggle. Now the app detects the start of speech and automatically sends the message after a pause — no button press needed, hands are free.</p>
-  <ul>
-    <li><span class="badge" style="background:#4AE27A;color:#fff">👂 Listening...</span> — the app is waiting for voice</li>
-    <li><span class="badge" style="background:#E24A4a;color:#fff">🔴 Speaking...</span> — voice detected, recording in progress</li>
-    <li>After a silence pause the recording is automatically sent</li>
-  </ul>
-  <div class="tip">In VAD mode the phone will vibrate at the moment recording starts — this is an additional event indicator.</div>
-  <div class="note">For accurate VAD triggering, configure the noise threshold: in <strong>Audio → Noise threshold</strong> drag the white line so that background noise stays to the left and your voice goes to the right. More details — in the <a href="#audio-settings">Audio settings</a> section.</div>
+  <h3 id="vad">VAD — hands-free voice input</h3>
+  <p>In Audio settings enable the <strong>VAD</strong> toggle. The app will start continuously listening via the built-in STT and react to marker phrases — no button presses needed, hands are completely free.</p>
+
+  <h4 style="color:#8ab8f0; font-size:1rem; margin: 20px 0 8px;">How it works</h4>
+  <ol style="padding-left:20px; margin-bottom:14px;">
+    <li>The app is always listening in the background, status — <span class="badge" style="background:#2db85e;color:#fff">👂 Say "..."</span></li>
+    <li>Say the <strong>wake phrase</strong> — the phone will vibrate and a short beep will play. Status — <span class="badge" style="background:#E24A4a;color:#fff">Say "..." to send</span></li>
+    <li>Speak your message — everything after the wake phrase is recorded</li>
+    <li>Say the <strong>end phrase</strong> — the message between the markers is automatically sent to Claude. A completion beep plays</li>
+  </ol>
+
+  <div style="display:flex; gap:12px; justify-content:center; margin:24px 0;">
+    <img src="img/1782076960335.jpg" style="width:28%; border-radius:12px; border:1px solid #2a2a4e;" alt="VAD listening">
+    <img src="img/1782076960332.jpg" style="width:28%; border-radius:12px; border:1px solid #2a2a4e;" alt="VAD recording">
+    <img src="img/1782076960328.jpg" style="width:28%; border-radius:12px; border:1px solid #2a2a4e;" alt="VAD response">
+  </div>
+
+  <div class="tip">Wake and end phrases can be changed in <strong>Audio → Wake phrase</strong> and <strong>Audio → End phrase</strong>. Choose words that the STT reliably recognises in your voice and that don't appear in normal speech by accident. The wake and end phrases may be the same.</div>
+  <div class="note">VAD uses online speech recognition and requires a stable internet connection. In poor connection conditions VAD may work incorrectly — use manual mode in such situations.</div>
+
+  <h4 style="color:#8ab8f0; font-size:1rem; margin: 20px 0 8px;">Use cases</h4>
+  <p>VAD is convenient when your hands are busy or you can't look at the screen — while driving, on a walk, or working at a computer. Enable the mode, place the phone in front of you or put it in your pocket and use a headset.</p>
 
   <!-- ── Text input ── -->
   <h2 id="text-input">Text input</h2>
@@ -499,20 +517,20 @@
 
   <!-- ── Building APK ── -->
   <h2 id="build">Building APK from source</h2>
-  <p>You will need <a href="https://nodejs.org" target="_blank">Node.js</a> and an account on <a href="https://expo.dev" target="_blank">Expo</a>.</p>
+  <p>You will need <a href="https://nodejs.org" target="_blank">Node.js 18+</a>, Android SDK and Java 17. The build runs locally without cloud services.</p>
 
-  <h3>Install dependencies</h3>
+  <h3>Quick build with the script</h3>
+  <p>The <code>claude-wheel-mobile</code> folder contains a script <code>build-apk.sh</code> that automates the entire process:</p>
   <pre>cd claude-wheel-mobile
-npm install</pre>
-
-  <h3>Log in to Expo</h3>
-  <pre>npx eas login</pre>
-
-  <h3>Build APK</h3>
-  <pre>npx eas build -p android --profile preview</pre>
-  <p>The build runs on Expo servers. When complete, a download link for the APK will be sent to your email and appear in your account on expo.dev.</p>
-
-  <div class="note">For development and debugging you can run the app locally via <code>npx expo start</code> and open it in the <a href="https://expo.dev/go" target="_blank">Expo Go</a> app on your phone.</div>
+bash build-apk.sh</pre>
+  <p>The script performs:</p>
+  <ol style="padding-left:20px; margin-bottom:14px;">
+    <li>Syncing sources to the build folder <code>~/builds/claude-wheel-mobile/</code></li>
+    <li>Installing dependencies (<code>npm install</code>)</li>
+    <li><code>expo prebuild</code> on first run or when <code>app.json</code> changes</li>
+    <li>Build via Gradle (<code>assembleRelease</code>, arm64 only)</li>
+    <li>Copying the finished APK to <code>~/builds/claude-wheel.apk</code></li>
+  </ol>
 
   <!-- ── Tips ── -->
   <h2 id="tips">Tips</h2>
@@ -520,8 +538,8 @@ npm install</pre>
     <li>If the server is temporarily unavailable, the indicator turns red. The app checks the connection on its own and will update the status when the server responds again.</li>
     <li>To copy Claude's response — tap the ⎘ icon below the message.</li>
     <li>If the <strong>Terminal</strong> button turned red during processing — the session is not responding. Open the terminal and see what is happening.</li>
-    <li>VAD works well in a quiet environment. In a noisy place it is better to use manual mode.</li>
-    <li>If you started a voice message but changed your mind about sending it — stop the recording and immediately tap <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#8B3A3A;color:#fff;font-size:14px;font-weight:bold;vertical-align:middle">✕</span> to cancel the send.</li>
+    <li>If you started a voice message in manual mode but changed your mind about sending it — stop the recording and immediately tap <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#8B3A3A;color:#fff;font-size:14px;font-weight:bold;vertical-align:middle">✕</span> to cancel the send.</li>
+    <li>In VAD mode, if recording has started but you don't want to send — tap <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#8B3A3A;color:#fff;font-size:14px;font-weight:bold;vertical-align:middle">✕</span> next to the recording indicator. The recording will be discarded and VAD will return to listening.</li>
     <li>If you don't want to listen to the full response — tap <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#8B3A3A;color:#fff;font-size:14px;font-weight:bold;vertical-align:middle">✕</span> to stop playback.</li>
     <li>If you want to delete all app data from the phone, enter the wrong PIN 5 times in a row.</li>
   </ul>
