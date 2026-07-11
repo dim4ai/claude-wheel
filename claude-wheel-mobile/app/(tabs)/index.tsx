@@ -92,6 +92,7 @@ const STORAGE_KEYS = {
   fontSize:        'setting_font_size',
   terminalLines:   'setting_terminal_lines',
   openShellSessions: 'setting_open_shell_sessions',
+  watchdogEnabled:   'setting_watchdog_enabled',
 };
 
 
@@ -271,6 +272,8 @@ export default function VoiceScreen() {
   const [terminalLinesText, setTerminalLinesText] = useState('10');
   const [hapticOnHangOpen, setHapticOnHangOpen] = useState(false);
   const [lockTimeout, setLockTimeout]       = useState(10);
+  const [watchdogEnabled, setWatchdogEnabled] = useState(false);
+  const watchdogCalledRef = useRef(false);
   const [sessionLocking, setSessionLocking] = useState(true);
   const lastActivityRef = useRef(Date.now());
   const [hapticStyle, setHapticStyle]       = useState('medium');
@@ -320,6 +323,7 @@ export default function VoiceScreen() {
   const hangWatcherRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastScreenRef = useRef('');
   const lastScreenChangeRef = useRef(Date.now());
+  const hungTerminalRef = useRef('');
   const [sessionHung, setSessionHung] = useState(false);
 
   // ── Configurable settings ─────────────────────────────────────────────────
@@ -428,7 +432,7 @@ export default function VoiceScreen() {
 
         if (diffs.length === 0) {
           // No change at all
-          if (sinceChange > hangTimeout * 1000) { setSessionHung(true); logHung(); }
+          if (sinceChange > hangTimeout * 1000) { hungTerminalRef.current = screen; setSessionHung(true); logHung(); }
         } else if (diffs.length > 5) {
           // Many chars changed — real progress
           suspectPositions.clear();
@@ -456,7 +460,7 @@ export default function VoiceScreen() {
             lastScreenChangeRef.current = Date.now();
             setSessionHung(false);
           } else if (sinceChange > hangTimeout * 1000) {
-            setSessionHung(true);
+            hungTerminalRef.current = screen; setSessionHung(true);
           }
         }
       } catch {}
@@ -471,6 +475,27 @@ export default function VoiceScreen() {
                   :                             Haptics.ImpactFeedbackStyle.Heavy;
       Haptics.impactAsync(style);
     }
+    if (!sessionHung) { watchdogCalledRef.current = false; return; }
+    if (!watchdogEnabled || watchdogCalledRef.current) return;
+    watchdogCalledRef.current = true;
+    const recentMessages = messages.slice(-4).map(m => ({ role: m.role === 'claude' ? 'assistant' : 'user', text: m.text }));
+    fetch(`${serverUrl}/watchdog`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': serverApiKey },
+      body: JSON.stringify({ session: currentSession, messages: recentMessages }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.resolved) { setSessionHung(false); return; }
+        fetch(`${serverUrl}/screen?session=${encodeURIComponent(currentSession)}&api_key=${encodeURIComponent(serverApiKey)}`)
+          .then(r => r.json())
+          .then(d => {
+            const screen = (d.screen ?? '').trimEnd().replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+            if (screen !== hungTerminalRef.current) setSessionHung(false);
+          })
+          .catch(() => {});
+      })
+      .catch(() => {});
   }, [sessionHung]);
 
   useEffect(() => {
@@ -564,6 +589,9 @@ export default function VoiceScreen() {
       if (anchorVad === 'true') toggleAnchorVad(true);
       if (savedWakeWord) { setWakeWord(savedWakeWord); wakeWordRef.current = savedWakeWord; }
       if (savedEndWord)  { setEndWord(savedEndWord);   endWordRef.current  = savedEndWord; }
+
+      const watchdog = await AsyncStorage.getItem(STORAGE_KEYS.watchdogEnabled);
+      if (watchdog !== null) setWatchdogEnabled(watchdog === 'true');
 
       // Restore open shell sessions, verify they still exist
       const savedShell = await AsyncStorage.getItem(STORAGE_KEYS.openShellSessions);
@@ -1012,38 +1040,70 @@ export default function VoiceScreen() {
   }
 
   // ── TTS ────────────────────────────────────────────────────────────────────
+  function splitIntoChunks(text: string, minLen = 100): string[] {
+    const parts = text.split(/(?<=[.!?])\s+(?=[А-ЯA-ZЁ])/);
+    const chunks: string[] = [];
+    let current = '';
+    for (const part of parts) {
+      if (!current) {
+        current = part;
+      } else if (current.length + 1 + part.length > minLen) {
+        chunks.push(current);
+        current = part;
+      } else {
+        current += ' ' + part;
+      }
+    }
+    if (current) chunks.push(current);
+    return chunks;
+  }
+
+  async function playBase64Mp3(base64: string, index: number): Promise<void> {
+    const localUri = FileSystem.cacheDirectory + `tts_chunk_${index}.mp3`;
+    await FileSystem.writeAsStringAsync(localUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+    if (cancelledRef.current) return;
+    const { sound } = await Audio.Sound.createAsync({ uri: localUri }, { shouldPlay: true });
+    soundRef.current = sound;
+    return new Promise((resolve) => {
+      sound.setOnPlaybackStatusUpdate((s) => {
+        if (cancelledRef.current) { resolve(); return; }
+        if (s.isLoaded && s.didJustFinish) { sound.unloadAsync(); resolve(); }
+      });
+    });
+  }
+
   async function speak(text: string): Promise<void> {
     try {
-      const resp = await fetch(`${serverUrl}/tts?api_key=${encodeURIComponent(serverApiKey)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, language, gender: voiceGender }),
-      });
-      if (!resp.ok) throw new Error(`TTS error: ${resp.status}`);
-      const blob = await resp.blob();
-      const base64: string = await new Promise((res, rej) => {
-        const reader = new FileReader();
-        reader.onload = () => res((reader.result as string).split(',')[1]);
-        reader.onerror = rej;
-        reader.readAsDataURL(blob);
-      });
-      if (cancelledRef.current) return;
-      const localUri = FileSystem.cacheDirectory + 'tts_response.mp3';
-      await FileSystem.writeAsStringAsync(localUri, base64, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      if (cancelledRef.current) return;
-      const { sound } = await Audio.Sound.createAsync({ uri: localUri }, { shouldPlay: true });
-      soundRef.current = sound;
-      return new Promise((resolve) => {
-        sound.setOnPlaybackStatusUpdate((s) => {
-          if (cancelledRef.current) { resolve(); return; }
-          if (s.isLoaded && s.didJustFinish) {
-            sound.unloadAsync();
-            resolve();
-          }
+      const chunks = splitIntoChunks(text);
+      if (chunks.length > 1) {
+        const resp = await fetch(`${serverUrl}/tts?api_key=${encodeURIComponent(serverApiKey)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ texts: chunks, language, gender: voiceGender }),
         });
-      });
+        if (!resp.ok) throw new Error(`TTS error: ${resp.status}`);
+        const data = await resp.json();
+        for (let i = 0; i < data.chunks.length; i++) {
+          if (cancelledRef.current) return;
+          await playBase64Mp3(data.chunks[i], i);
+        }
+      } else {
+        const resp = await fetch(`${serverUrl}/tts?api_key=${encodeURIComponent(serverApiKey)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, language, gender: voiceGender }),
+        });
+        if (!resp.ok) throw new Error(`TTS error: ${resp.status}`);
+        const blob = await resp.blob();
+        const base64: string = await new Promise((res, rej) => {
+          const reader = new FileReader();
+          reader.onload = () => res((reader.result as string).split(',')[1]);
+          reader.onerror = rej;
+          reader.readAsDataURL(blob);
+        });
+        if (cancelledRef.current) return;
+        await playBase64Mp3(base64, 0);
+      }
     } catch (e) {
       showError('TTS error: ' + e);
     }
@@ -1456,6 +1516,10 @@ export default function VoiceScreen() {
               <View style={styles.settingRow}>
                 <Text style={[styles.settingLabel, { flex: 1 }]}>Request locking</Text>
                 <Switch value={sessionLocking} onValueChange={v => { setSessionLocking(v); AsyncStorage.setItem(STORAGE_KEYS.sessionLocking, String(v)).catch(() => {}); }} thumbColor={sessionLocking ? '#4AE27A' : '#888'} />
+              </View>
+              <View style={styles.settingRow}>
+                <Text style={[styles.settingLabel, { flex: 1 }]}>Watchdog</Text>
+                <Switch value={watchdogEnabled} onValueChange={v => { setWatchdogEnabled(v); AsyncStorage.setItem(STORAGE_KEYS.watchdogEnabled, String(v)).catch(() => {}); }} thumbColor={watchdogEnabled ? '#4AE27A' : '#888'} />
               </View>
               <TouchableOpacity style={styles.settingRow} onPress={() => setHapticOnHangOpen(v => !v)}>
                 <Text style={styles.settingLabel}>Haptic on hang</Text>

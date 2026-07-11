@@ -34,3 +34,27 @@ sudo systemctl start claude-wheel
 
 echo "Claude Wheel service installed and started."
 echo "Check status: systemctl status claude-wheel"
+
+# Initialize watchdog directory trust (Claude asks on first run in a new directory)
+WATCHDOG_SESSION=$(grep -E '^WATCHDOG_SESSION=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "cw-watchdog")
+WATCHDOG_DIR="$SCRIPT_DIR/watchdog"
+echo "Initializing watchdog trust: $WATCHDOG_DIR"
+tmux new-session -d -s "$WATCHDOG_SESSION" -c "$WATCHDOG_DIR"
+tmux send-keys -t "$WATCHDOG_SESSION" "claude" Enter
+sleep 3
+tmux send-keys -t "$WATCHDOG_SESSION" Enter ""
+sleep 1
+tmux kill-session -t "$WATCHDOG_SESSION" 2>/dev/null || true
+echo "Watchdog initialized."
+
+# Initialize format directory trust
+FORMAT_SESSION=$(grep -E '^FORMAT_SESSION=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "cw-format")
+FORMAT_DIR="$SCRIPT_DIR/format"
+echo "Initializing format trust: $FORMAT_DIR"
+tmux new-session -d -s "$FORMAT_SESSION" -c "$FORMAT_DIR"
+tmux send-keys -t "$FORMAT_SESSION" "claude" Enter
+sleep 3
+tmux send-keys -t "$FORMAT_SESSION" Enter ""
+sleep 1
+tmux kill-session -t "$FORMAT_SESSION" 2>/dev/null || true
+echo "Format initialized."

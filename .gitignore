@@ -1,3 +1,4 @@
 .claude/
 docr/
 claude-wheel-mobile/build-apk.sh
+claude-wheel-server/.env

@@ -10,6 +10,7 @@ import contextlib
 import difflib
 import io
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -26,9 +27,13 @@ from transliterate import translit
 load_dotenv()
 
 # ── Config ─────────────────────────────────────────────────────────────────
-GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "")
-API_KEY        = os.environ.get("API_KEY", "")
-WHISPER_MODEL  = os.environ.get("WHISPER_MODEL", "whisper-large-v3-turbo")
+GROQ_API_KEY      = os.environ.get("GROQ_API_KEY", "")
+API_KEY           = os.environ.get("API_KEY", "")
+WHISPER_MODEL     = os.environ.get("WHISPER_MODEL", "whisper-large-v3-turbo")
+WATCHDOG_SESSION  = os.environ.get("WATCHDOG_SESSION", "cw-watchdog")
+WATCHDOG_DIR      = os.path.join(os.path.dirname(__file__), "watchdog")
+FORMAT_SESSION    = os.environ.get("FORMAT_SESSION", "cw-format")
+FORMAT_DIR        = os.path.join(os.path.dirname(__file__), "format")
 
 def _validate_api_key(key: str):
     errors = []
@@ -65,6 +70,8 @@ SESSIONS_CONF  = os.path.join(os.path.dirname(__file__), os.environ.get("SESSION
 last_activity: dict[str, float] = {}
 session_locks: dict[str, asyncio.Lock] = {}
 sessions_conf_lock = asyncio.Lock()
+watchdog_lock = asyncio.Lock()
+format_lock   = asyncio.Lock()
 
 def get_session_lock(session: str) -> asyncio.Lock:
     if session not in session_locks:
@@ -114,11 +121,12 @@ async def wait_for_claude_ready(session: str, timeout: int = 30):
         if current and current == prev:
             stable_count += 1
             if stable_count >= 2:
-                return
+                return True
         else:
             stable_count = 0
         prev = current
         await asyncio.sleep(2)
+    return False
 
 def has_conversation_history(work_dir: str) -> bool:
     """Check if Claude has conversation history for this directory."""
@@ -210,33 +218,49 @@ EDGE_TTS_VOICES = {
     'ja': {'female': 'ja-JP-NanamiNeural',    'male': 'ja-JP-KeitaNeural'},
 }
 
+async def _tts_chunk(text: str, voice: str) -> bytes:
+    import base64 as _b64
+    communicate = edge_tts.Communicate(text, voice)
+    buf = io.BytesIO()
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            buf.write(chunk["data"])
+    return buf.getvalue()
+
 @app.api_route("/tts", methods=["GET", "POST"])
 async def text_to_speech(
     request: Request,
     text: str = Query(None),
     _=Depends(verify_key),
 ):
+    import base64 as _b64
     language = 'ru'
     gender = 'female'
+    texts = None
     if request.method == "POST":
         try:
             body = await request.json()
             text = body.get("text", text)
+            texts = body.get("texts", None)
             language = body.get("language", "ru")
             gender = body.get("gender", "female")
         except Exception:
             pass
-    if text is None:
-        raise HTTPException(status_code=400, detail="text parameter required")
 
     voices = EDGE_TTS_VOICES.get(language, EDGE_TTS_VOICES['en'])
     voice = voices.get(gender, voices['female'])
+
+    if texts:
+        try:
+            results = await asyncio.gather(*[_tts_chunk(t, voice) for t in texts])
+            return {"chunks": [_b64.b64encode(r).decode() for r in results]}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    if text is None:
+        raise HTTPException(status_code=400, detail="text parameter required")
     try:
-        communicate = edge_tts.Communicate(text, voice)
-        mp3_buf = io.BytesIO()
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                mp3_buf.write(chunk["data"])
+        mp3_buf = io.BytesIO(await _tts_chunk(text, voice))
         mp3_buf.seek(0)
         return StreamingResponse(mp3_buf, media_type="audio/mpeg")
     except Exception as e:
@@ -299,6 +323,9 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
                 continue
             if "ENDENDENDENDEND" in content:
                 response = content.split("ENDENDENDENDEND")[0].strip()
+                if "●" in response:
+                    response = await format_response(response)
+                response = strip_markdown(response)
                 return {"text": response}
 
     raise HTTPException(status_code=504, detail="Claude response timeout")
@@ -471,6 +498,161 @@ async def dispatch(action: str = Query(...), session: str = Query(None), dir: st
         return {"ok": True}
 
     raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
+
+
+# ── Watchdog endpoint ───────────────────────────────────────────────────────
+
+class WatchdogRequest(BaseModel):
+    session: str
+    messages: list[dict]  # [{role: "user"|"assistant", text: "..."}]
+
+@app.post("/watchdog")
+async def watchdog_endpoint(body: WatchdogRequest, _=Depends(verify_key)):
+    """Ask watchdog Claude session to auto-approve a hung session's confirmation prompt."""
+    print(f"[watchdog] request: session={body.session} messages={len(body.messages)}", flush=True)
+
+    if not is_running(body.session):
+        print(f"[watchdog] session not running: {body.session}", flush=True)
+        raise HTTPException(status_code=404, detail=f"Session '{body.session}' not running")
+
+    # Capture last 30 lines of hung session terminal
+    terminal = subprocess.run(
+        ["tmux", "capture-pane", "-t", body.session, "-p", "-S", "-30"],
+        capture_output=True, text=True
+    ).stdout.strip()
+    print(f"[watchdog] terminal ({len(terminal)} chars):\n{terminal}\n---", flush=True)
+
+    async with watchdog_lock:
+        # Always start a fresh Claude session — no context from previous decisions
+        was_running = is_running(WATCHDOG_SESSION)
+        if was_running:
+            subprocess.run(["tmux", "kill-session", "-t", WATCHDOG_SESSION], capture_output=True)
+        os.makedirs(WATCHDOG_DIR, exist_ok=True)
+        subprocess.run(["tmux", "new-session", "-d", "-s", WATCHDOG_SESSION, "-c", WATCHDOG_DIR])
+        subprocess.run(["tmux", "send-keys", "-t", WATCHDOG_SESSION, "claude", "Enter"])
+        print(f"[watchdog] started fresh session (was_running={was_running}), waiting for ready...", flush=True)
+        ready = await wait_for_claude_ready(WATCHDOG_SESSION, timeout=30)
+        print(f"[watchdog] claude ready={ready}", flush=True)
+
+        log_path = session_log(WATCHDOG_SESSION)
+        open(log_path, "w").close()
+        print(f"[watchdog] log cleared: {log_path}", flush=True)
+
+        # Build prompt
+        messages_text = "\n".join(
+            f"[{'USER' if m.get('role') == 'user' else 'CLAUDE'}]: {m.get('text', '')}"
+            for m in body.messages[-4:]
+        )
+        prompt = (
+            f"[HUNG SESSION: {body.session}]\n"
+            f"[TERMINAL — last 30 lines]\n{terminal}\n\n"
+            f"[RECENT CHAT]\n{messages_text}\n\n"
+            f"Decide: APPROVE or SKIP."
+        )
+        print(f"[watchdog] prompt ({len(prompt)} chars):\n{prompt}\n---", flush=True)
+
+        tmp_input = "/tmp/watchdog_input.txt"
+        with open(tmp_input, "w") as f:
+            f.write(prompt)
+        r1 = subprocess.run(["tmux", "load-buffer", tmp_input], capture_output=True)
+        r2 = subprocess.run(["tmux", "paste-buffer", "-t", WATCHDOG_SESSION], capture_output=True)
+        print(f"[watchdog] paste: load={r1.returncode} paste={r2.returncode}", flush=True)
+        await asyncio.sleep(0.2)
+        subprocess.run(["tmux", "send-keys", "-t", WATCHDOG_SESSION, "\r"], capture_output=True)
+        print(f"[watchdog] prompt sent, polling log...", flush=True)
+
+        # Poll for response (60s timeout)
+        deadline = time.time() + 60
+        last_log_size = 0
+        while time.time() < deadline:
+            await asyncio.sleep(0.5)
+            try:
+                with open(log_path) as f:
+                    content = f.read()
+            except FileNotFoundError:
+                continue
+            if len(content) != last_log_size:
+                print(f"[watchdog] log growing: {last_log_size} → {len(content)} chars", flush=True)
+                last_log_size = len(content)
+            if "ENDENDENDENDEND" in content:
+                response = content.split("ENDENDENDENDEND")[0].strip()
+                lines = response.splitlines()
+                approved = lines[0].strip().upper() == "APPROVE" if lines else False
+                print(f"[watchdog] {body.session}: {'APPROVE' if approved else 'SKIP'} — {response[:200]}", flush=True)
+                if approved:
+                    keys = lines[1].strip().split() if len(lines) > 1 else ["Enter"]
+                    print(f"[watchdog] sending keys: {keys}", flush=True)
+                    for key in keys:
+                        subprocess.run(["tmux", "send-keys", "-t", body.session, key])
+                        await asyncio.sleep(0.1)
+                return {"resolved": approved, "reason": response}
+
+        print(f"[watchdog] timeout. log size={last_log_size}, last content: {content[:300] if last_log_size else '(empty)'}", flush=True)
+        return {"resolved": False, "reason": "watchdog timeout"}
+
+
+# ── Format endpoint ──────────────────────────────────────────────────────────
+
+def strip_markdown(text: str) -> str:
+    import re
+    text = re.sub(r'```[^\n]*\n(.*?)```', r'\1', text, flags=re.DOTALL)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'__([^_]+)__', r'\1', text)
+    text = re.sub(r'\*([^*\n]+)\*', r'\1', text)
+    text = re.sub(r'_([^_\n]+)_', r'\1', text)
+    text = re.sub(r'^\s*[-*]\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^>\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[-*_]{3,}\s*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'\1', text)
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    return text.strip()
+
+async def format_response(raw: str) -> str:
+    """Clean raw Claude Code output for TTS: strip tool calls, markdown, join fragments."""
+    async with format_lock:
+        if not is_running(FORMAT_SESSION):
+            os.makedirs(FORMAT_DIR, exist_ok=True)
+            subprocess.run(["tmux", "new-session", "-d", "-s", FORMAT_SESSION, "-c", FORMAT_DIR])
+            subprocess.run(["tmux", "send-keys", "-t", FORMAT_SESSION, "claude", "Enter"])
+            await wait_for_claude_ready(FORMAT_SESSION, timeout=30)
+
+        log_path = session_log(FORMAT_SESSION)
+        open(log_path, "w").close()
+
+        tmp_input = "/tmp/format_input.txt"
+        with open(tmp_input, "w") as f:
+            f.write(raw)
+        subprocess.run(["tmux", "load-buffer", tmp_input], capture_output=True)
+        subprocess.run(["tmux", "paste-buffer", "-t", FORMAT_SESSION], capture_output=True)
+        await asyncio.sleep(0.2)
+        subprocess.run(["tmux", "send-keys", "-t", FORMAT_SESSION, "\r"], capture_output=True)
+
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            await asyncio.sleep(0.5)
+            try:
+                with open(log_path) as f:
+                    content = f.read()
+            except FileNotFoundError:
+                continue
+            if "ENDENDENDENDEND" in content:
+                result = content.split("ENDENDENDENDEND")[0].strip()
+                asyncio.create_task(_restart_format_session())
+                return result
+
+        return raw
+
+
+async def _restart_format_session():
+    async with format_lock:
+        subprocess.run(["tmux", "kill-session", "-t", FORMAT_SESSION], capture_output=True)
+        os.makedirs(FORMAT_DIR, exist_ok=True)
+        subprocess.run(["tmux", "new-session", "-d", "-s", FORMAT_SESSION, "-c", FORMAT_DIR])
+        subprocess.run(["tmux", "send-keys", "-t", FORMAT_SESSION, "claude", "Enter"])
+        await wait_for_claude_ready(FORMAT_SESSION, timeout=30)
 
 
 # ── Screen endpoint ─────────────────────────────────────────────────────────
