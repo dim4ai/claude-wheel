@@ -62,9 +62,17 @@ def _validate_api_key(key: str):
 
 _validate_api_key(API_KEY)
 STT_LANGUAGE   = os.environ.get("STT_LANGUAGE", "ru")  # set to empty string for auto-detect
-ASK_TIMEOUT    = int(os.environ.get("ASK_TIMEOUT", "240"))
+ASK_TIMEOUT    = int(os.environ.get("ASK_TIMEOUT", "600"))
 IDLE_TIMEOUT   = int(os.environ.get("IDLE_TIMEOUT", "1800"))  # 30 min default
 SESSIONS_CONF  = os.path.join(os.path.dirname(__file__), os.environ.get("SESSIONS_LIST", "sessions-list.txt"))
+
+def tmux_target(session: str) -> str:
+    """Exact-match tmux target. Without '=', tmux -t falls back to prefix matching,
+    so '-t zoo' would hit a running 'zoo-web' session when 'zoo' itself isn't running.
+    The trailing ':' is required for pane-targeting commands (capture-pane, send-keys,
+    display-message, paste-buffer) — bare '=name' only works for session-targeting
+    commands (has-session, kill-session, rename-session)."""
+    return f"={session}:"
 
 # ── Session state ───────────────────────────────────────────────────────────
 last_activity: dict[str, float] = {}
@@ -96,13 +104,13 @@ def load_sessions() -> dict[str, str]:
     return sessions
 
 def is_running(session: str) -> bool:
-    result = subprocess.run(["tmux", "has-session", "-t", session], capture_output=True)
+    result = subprocess.run(["tmux", "has-session", "-t", tmux_target(session)], capture_output=True)
     return result.returncode == 0
 
 async def wait_for_claude_ready(session: str, timeout: int = 30):
     """Wait for Claude to load: first detect screen change, then wait for stability."""
     def capture():
-        return subprocess.run(["tmux", "capture-pane", "-t", session, "-p"], capture_output=True, text=True).stdout
+        return subprocess.run(["tmux", "capture-pane", "-t", tmux_target(session), "-p"], capture_output=True, text=True).stdout
 
     deadline = time.time() + timeout
 
@@ -141,13 +149,13 @@ def ensure_running(session: str, work_dir: str) -> bool:
     if not is_running(session):
         subprocess.run(["tmux", "new-session", "-d", "-s", session, "-c", work_dir])
         cmd = "claude --continue" if has_conversation_history(work_dir) else "claude"
-        subprocess.run(["tmux", "send-keys", "-t", session, cmd, "Enter"])
+        subprocess.run(["tmux", "send-keys", "-t", tmux_target(session), cmd, "Enter"])
         print(f"[session] started: {session} ({cmd})", flush=True)
         return True
     return False
 
 def stop_session(session: str):
-    subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
+    subprocess.run(["tmux", "kill-session", "-t", tmux_target(session)], capture_output=True)
     last_activity.pop(session, None)
     print(f"[session] stopped: {session}", flush=True)
 
@@ -294,11 +302,11 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
 
         # Exit copy-mode if pane is in it
         pane_mode = subprocess.run(
-            ["tmux", "display-message", "-t", session, "-p", "#{pane_in_mode}"],
+            ["tmux", "display-message", "-t", tmux_target(session), "-p", "#{pane_in_mode}"],
             capture_output=True, text=True
         )
         if pane_mode.stdout.strip() == "1":
-            subprocess.run(["tmux", "send-keys", "-t", session, "-X", "cancel"], capture_output=True)
+            subprocess.run(["tmux", "send-keys", "-t", tmux_target(session), "-X", "cancel"], capture_output=True)
             time.sleep(0.2)
 
         # Inject text into tmux via temp file (reliable for long text)
@@ -306,11 +314,11 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
         with open(tmp_input, "w") as f:
             f.write(body.text)
         subprocess.run(["tmux", "load-buffer", tmp_input], capture_output=True)
-        result = subprocess.run(["tmux", "paste-buffer", "-t", session], capture_output=True, text=True)
+        result = subprocess.run(["tmux", "paste-buffer", "-t", tmux_target(session)], capture_output=True, text=True)
         if result.returncode != 0:
             raise HTTPException(status_code=503, detail="Session unavailable. Make sure Claude is running, or switch to another session.")
         time.sleep(0.2)
-        subprocess.run(["tmux", "send-keys", "-t", session, "\r"], capture_output=True)
+        subprocess.run(["tmux", "send-keys", "-t", tmux_target(session), "\r"], capture_output=True)
 
         # Poll for terminator
         deadline = time.time() + ASK_TIMEOUT
@@ -338,14 +346,24 @@ PROJECT_TEMPLATE = os.path.join(os.path.dirname(SESSIONS_CONF), "..", "templates
 def _trust_session(name: str, path: str):
     """Start Claude in a tmux session to accept trust prompt, then kill it."""
     subprocess.run(["tmux", "new-session", "-d", "-s", name, "-c", path])
-    subprocess.run(["tmux", "send-keys", "-t", name, "claude", "Enter"])
+    subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "claude", "Enter"])
     time.sleep(3)
-    subprocess.run(["tmux", "send-keys", "-t", name, "Enter", ""])
+    subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter", ""])
     time.sleep(1)
-    subprocess.run(["tmux", "kill-session", "-t", name], capture_output=True)
+    subprocess.run(["tmux", "kill-session", "-t", tmux_target(name)], capture_output=True)
+
+def _set_log_marker(work_dir: str, enable: bool):
+    marker = os.path.join(work_dir, ".log-conversation")
+    if enable:
+        open(marker, "w").close()
+    else:
+        try:
+            os.remove(marker)
+        except FileNotFoundError:
+            pass
 
 @app.post("/dispatch")
-async def dispatch(action: str = Query(...), session: str = Query(None), dir: str = Query(None), project_mode: str = Query(None), new_name: str = Query(None), _=Depends(verify_key)):
+async def dispatch(action: str = Query(...), session: str = Query(None), dir: str = Query(None), project_mode: str = Query(None), new_name: str = Query(None), log_conversation: str = Query(None), _=Depends(verify_key)):
     """Manage Claude tmux sessions."""
     sessions_conf = load_sessions()
 
@@ -398,10 +416,10 @@ async def dispatch(action: str = Query(...), session: str = Query(None), dir: st
         work_dir = sessions_conf[session]
         new_name = f"{session}_new"
         subprocess.run(["tmux", "new-session", "-d", "-s", new_name, "-c", work_dir])
-        subprocess.run(["tmux", "send-keys", "-t", new_name, "claude", "Enter"])
+        subprocess.run(["tmux", "send-keys", "-t", tmux_target(new_name), "claude", "Enter"])
         if is_running(session):
-            subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
-        subprocess.run(["tmux", "rename-session", "-t", new_name, session], capture_output=True)
+            subprocess.run(["tmux", "kill-session", "-t", tmux_target(session)], capture_output=True)
+        subprocess.run(["tmux", "rename-session", "-t", tmux_target(new_name), session], capture_output=True)
         last_activity[session] = time.time()
         print(f"[dispatch] recreated: {session}", flush=True)
         return {"ok": True, "session": session}
@@ -427,6 +445,8 @@ async def dispatch(action: str = Query(...), session: str = Query(None), dir: st
             _trust_session(lab_name,  lab_dir)
             _trust_session(disc_name, disc_dir)
 
+            _set_log_marker(work_dir, log_conversation == "1")
+
             async with sessions_conf_lock:
                 with open(SESSIONS_CONF, "a") as f:
                     f.write(f"{lab_name}: {lab_dir}\n")
@@ -436,10 +456,11 @@ async def dispatch(action: str = Query(...), session: str = Query(None), dir: st
             return {"ok": True, "sessions": [lab_name, disc_name]}
         else:
             os.makedirs(work_dir, exist_ok=True)
-            check = subprocess.run(["tmux", "has-session", "-t", session], capture_output=True)
+            check = subprocess.run(["tmux", "has-session", "-t", tmux_target(session)], capture_output=True)
             if check.returncode == 0:
                 raise HTTPException(status_code=409, detail=f"Session '{session}' already exists")
             _trust_session(session, work_dir)
+            _set_log_marker(work_dir, log_conversation == "1")
             async with sessions_conf_lock:
                 with open(SESSIONS_CONF, "a") as f:
                     f.write(f"{session}: {work_dir}\n")
@@ -459,7 +480,7 @@ async def dispatch(action: str = Query(...), session: str = Query(None), dir: st
         work_dir = sessions_conf[session]
         # rename tmux session if running
         if is_running(session):
-            subprocess.run(["tmux", "rename-session", "-t", session, new_name], capture_output=True)
+            subprocess.run(["tmux", "rename-session", "-t", tmux_target(session), new_name], capture_output=True)
         # update sessions.conf
         async with sessions_conf_lock:
             try:
@@ -500,6 +521,28 @@ async def dispatch(action: str = Query(...), session: str = Query(None), dir: st
     raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 
 
+# ── Folder browser (for "connect to existing project" picker) ──────────────
+
+@app.get("/list-dirs")
+def list_dirs(path: str = Query(None), _=Depends(verify_key)):
+    """List subdirectories of a path, for the mobile folder picker. Defaults to ~/solutions."""
+    home = os.path.expanduser("~")
+    target = os.path.abspath(path) if path else os.path.join(home, "solutions")
+    if not (target == home or target.startswith(home + os.sep)):
+        raise HTTPException(status_code=400, detail="Path must be inside home directory")
+    if not os.path.isdir(target):
+        raise HTTPException(status_code=404, detail="Directory not found")
+    try:
+        dirs = sorted(
+            entry for entry in os.listdir(target)
+            if not entry.startswith('.') and os.path.isdir(os.path.join(target, entry))
+        )
+    except PermissionError:
+        dirs = []
+    parent = os.path.dirname(target) if target != home else None
+    return {"path": target, "parent": parent, "dirs": dirs}
+
+
 # ── Watchdog endpoint ───────────────────────────────────────────────────────
 
 class WatchdogRequest(BaseModel):
@@ -517,7 +560,7 @@ async def watchdog_endpoint(body: WatchdogRequest, _=Depends(verify_key)):
 
     # Capture last 30 lines of hung session terminal
     terminal = subprocess.run(
-        ["tmux", "capture-pane", "-t", body.session, "-p", "-S", "-30"],
+        ["tmux", "capture-pane", "-t", tmux_target(body.session), "-p", "-S", "-30"],
         capture_output=True, text=True
     ).stdout.strip()
     print(f"[watchdog] terminal ({len(terminal)} chars):\n{terminal}\n---", flush=True)
@@ -526,10 +569,10 @@ async def watchdog_endpoint(body: WatchdogRequest, _=Depends(verify_key)):
         # Always start a fresh Claude session — no context from previous decisions
         was_running = is_running(WATCHDOG_SESSION)
         if was_running:
-            subprocess.run(["tmux", "kill-session", "-t", WATCHDOG_SESSION], capture_output=True)
+            subprocess.run(["tmux", "kill-session", "-t", tmux_target(WATCHDOG_SESSION)], capture_output=True)
         os.makedirs(WATCHDOG_DIR, exist_ok=True)
         subprocess.run(["tmux", "new-session", "-d", "-s", WATCHDOG_SESSION, "-c", WATCHDOG_DIR])
-        subprocess.run(["tmux", "send-keys", "-t", WATCHDOG_SESSION, "claude", "Enter"])
+        subprocess.run(["tmux", "send-keys", "-t", tmux_target(WATCHDOG_SESSION), "claude", "Enter"])
         print(f"[watchdog] started fresh session (was_running={was_running}), waiting for ready...", flush=True)
         ready = await wait_for_claude_ready(WATCHDOG_SESSION, timeout=30)
         print(f"[watchdog] claude ready={ready}", flush=True)
@@ -555,10 +598,10 @@ async def watchdog_endpoint(body: WatchdogRequest, _=Depends(verify_key)):
         with open(tmp_input, "w") as f:
             f.write(prompt)
         r1 = subprocess.run(["tmux", "load-buffer", tmp_input], capture_output=True)
-        r2 = subprocess.run(["tmux", "paste-buffer", "-t", WATCHDOG_SESSION], capture_output=True)
+        r2 = subprocess.run(["tmux", "paste-buffer", "-t", tmux_target(WATCHDOG_SESSION)], capture_output=True)
         print(f"[watchdog] paste: load={r1.returncode} paste={r2.returncode}", flush=True)
         await asyncio.sleep(0.2)
-        subprocess.run(["tmux", "send-keys", "-t", WATCHDOG_SESSION, "\r"], capture_output=True)
+        subprocess.run(["tmux", "send-keys", "-t", tmux_target(WATCHDOG_SESSION), "\r"], capture_output=True)
         print(f"[watchdog] prompt sent, polling log...", flush=True)
 
         # Poll for response (60s timeout)
@@ -583,7 +626,7 @@ async def watchdog_endpoint(body: WatchdogRequest, _=Depends(verify_key)):
                     keys = lines[1].strip().split() if len(lines) > 1 else ["Enter"]
                     print(f"[watchdog] sending keys: {keys}", flush=True)
                     for key in keys:
-                        subprocess.run(["tmux", "send-keys", "-t", body.session, key])
+                        subprocess.run(["tmux", "send-keys", "-t", tmux_target(body.session), key])
                         await asyncio.sleep(0.1)
                 return {"resolved": approved, "reason": response}
 
@@ -616,7 +659,7 @@ async def format_response(raw: str) -> str:
         if not is_running(FORMAT_SESSION):
             os.makedirs(FORMAT_DIR, exist_ok=True)
             subprocess.run(["tmux", "new-session", "-d", "-s", FORMAT_SESSION, "-c", FORMAT_DIR])
-            subprocess.run(["tmux", "send-keys", "-t", FORMAT_SESSION, "claude", "Enter"])
+            subprocess.run(["tmux", "send-keys", "-t", tmux_target(FORMAT_SESSION), "claude", "Enter"])
             await wait_for_claude_ready(FORMAT_SESSION, timeout=30)
 
         log_path = session_log(FORMAT_SESSION)
@@ -626,9 +669,9 @@ async def format_response(raw: str) -> str:
         with open(tmp_input, "w") as f:
             f.write(raw)
         subprocess.run(["tmux", "load-buffer", tmp_input], capture_output=True)
-        subprocess.run(["tmux", "paste-buffer", "-t", FORMAT_SESSION], capture_output=True)
+        subprocess.run(["tmux", "paste-buffer", "-t", tmux_target(FORMAT_SESSION)], capture_output=True)
         await asyncio.sleep(0.2)
-        subprocess.run(["tmux", "send-keys", "-t", FORMAT_SESSION, "\r"], capture_output=True)
+        subprocess.run(["tmux", "send-keys", "-t", tmux_target(FORMAT_SESSION), "\r"], capture_output=True)
 
         deadline = time.time() + 60
         while time.time() < deadline:
@@ -648,10 +691,10 @@ async def format_response(raw: str) -> str:
 
 async def _restart_format_session():
     async with format_lock:
-        subprocess.run(["tmux", "kill-session", "-t", FORMAT_SESSION], capture_output=True)
+        subprocess.run(["tmux", "kill-session", "-t", tmux_target(FORMAT_SESSION)], capture_output=True)
         os.makedirs(FORMAT_DIR, exist_ok=True)
         subprocess.run(["tmux", "new-session", "-d", "-s", FORMAT_SESSION, "-c", FORMAT_DIR])
-        subprocess.run(["tmux", "send-keys", "-t", FORMAT_SESSION, "claude", "Enter"])
+        subprocess.run(["tmux", "send-keys", "-t", tmux_target(FORMAT_SESSION), "claude", "Enter"])
         await wait_for_claude_ready(FORMAT_SESSION, timeout=30)
 
 
@@ -664,7 +707,7 @@ def screen(session: str = Query(...), start: int = Query(0), count: int = Query(
         raise HTTPException(status_code=404, detail=f"Session '{session}' not found")
     if not is_running(session):
         raise HTTPException(status_code=503, detail="Session not running.")
-    cmd = ["tmux", "capture-pane", "-t", session, "-p", "-S", str(-(start + count))]
+    cmd = ["tmux", "capture-pane", "-t", tmux_target(session), "-p", "-S", str(-(start + count))]
     if start > 0:
         cmd += ["-E", str(-start)]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -688,7 +731,7 @@ def keypress(key: str = Query(...), session: str = Query(...), _=Depends(verify_
         raise HTTPException(status_code=503, detail="Session not running.")
     tmux_key = "\x1b" if key == "Escape" else key
     result = subprocess.run(
-        ["tmux", "send-keys", "-t", session, tmux_key, ""],
+        ["tmux", "send-keys", "-t", tmux_target(session), tmux_key, ""],
         capture_output=True, text=True
     )
     if result.returncode != 0:
@@ -717,14 +760,14 @@ def shell_sessions(_=Depends(verify_key)):
 @app.get("/shell-screen")
 def shell_screen(session: str = Query(...), start: int = Query(0), count: int = Query(80), _=Depends(verify_key)):
     """Return terminal output for any tmux session."""
-    cmd = ["tmux", "capture-pane", "-t", session, "-p", "-S", str(-(start + count))]
+    cmd = ["tmux", "capture-pane", "-t", tmux_target(session), "-p", "-S", str(-(start + count))]
     if start > 0:
         cmd += ["-E", str(-start)]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise HTTPException(status_code=404, detail=f"Session '{session}' not found")
     cursor_result = subprocess.run(
-        ["tmux", "display-message", "-t", session, "-p", "#{cursor_x} #{cursor_y} #{pane_height}"],
+        ["tmux", "display-message", "-t", tmux_target(session), "-p", "#{cursor_x} #{cursor_y} #{pane_height}"],
         capture_output=True, text=True
     )
     cursor_x, cursor_y, pane_height = None, None, None
@@ -742,11 +785,11 @@ def shell_input(session: str = Query(...), body: dict = Body(...), _=Depends(ver
     key  = body.get("key", "")
     raw  = body.get("raw", False)
     if key:
-        args = ["tmux", "send-keys", "-t", session, key, ""]
+        args = ["tmux", "send-keys", "-t", tmux_target(session), key, ""]
     elif raw:
-        args = ["tmux", "send-keys", "-t", session, text, ""]
+        args = ["tmux", "send-keys", "-t", tmux_target(session), text, ""]
     else:
-        args = ["tmux", "send-keys", "-t", session, text, "Enter"]
+        args = ["tmux", "send-keys", "-t", tmux_target(session), text, "Enter"]
     result = subprocess.run(args, capture_output=True, text=True)
     if result.returncode != 0:
         raise HTTPException(status_code=404, detail=f"Session '{session}' not found")
@@ -776,7 +819,7 @@ def shell_create(body: dict = Body(...), _=Depends(verify_key)):
 def shell_delete(session: str = Query(...), _=Depends(verify_key)):
     """Kill a tmux shell session."""
     result = subprocess.run(
-        ["tmux", "kill-session", "-t", session],
+        ["tmux", "kill-session", "-t", tmux_target(session)],
         capture_output=True, text=True
     )
     if result.returncode != 0:

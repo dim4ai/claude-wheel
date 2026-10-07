@@ -312,11 +312,19 @@ export default function VoiceScreen() {
   const [sessionsList, setSessionsList]     = useState<{name: string; dir: string; running: boolean}[]>([]);
   const [newSessionName, setNewSessionName] = useState('');
   const [newSessionDir, setNewSessionDir]   = useState('');
+  const [logConversation, setLogConversation] = useState(false);
   const [renameSession, setRenameSession]   = useState<string | null>(null);
   const [renameInput, setRenameInput]       = useState('');
   const [dirEdited, setDirEdited]           = useState(false);
   const [sessionError, setSessionError]     = useState('');
   const [projectMode, setProjectMode]       = useState(false);
+  const [folderPickerOpen, setFolderPickerOpen]     = useState(false);
+  const [folderPickerPath, setFolderPickerPath]     = useState('');
+  const [folderPickerParent, setFolderPickerParent] = useState<string | null>(null);
+  const [folderPickerDirs, setFolderPickerDirs]     = useState<string[]>([]);
+  const [folderPickerLoading, setFolderPickerLoading] = useState(false);
+  const [folderPickerError, setFolderPickerError]   = useState('');
+  const folderPickerFloorRef = useRef<string | null>(null); // picker won't go above this dir
   const screenInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const messagesScrollRef = useRef<ScrollView>(null);
   const isLoadingMessagesRef = useRef(false);
@@ -324,6 +332,7 @@ export default function VoiceScreen() {
   const lastScreenRef = useRef('');
   const lastScreenChangeRef = useRef(Date.now());
   const hungTerminalRef = useRef('');
+  const askStartedRef = useRef(false); // true only once /ask actually fires — STT wait shouldn't count as "hung"
   const [sessionHung, setSessionHung] = useState(false);
 
   // ── Configurable settings ─────────────────────────────────────────────────
@@ -381,6 +390,7 @@ export default function VoiceScreen() {
     }
     lastScreenRef.current = '';
     lastScreenChangeRef.current = Date.now();
+    askStartedRef.current = false;
     // suspect positions: Map<charIndex, Set<charsSeenThere>>
     const suspectPositions = new Map<number, Set<string>>();
     let active = true;
@@ -395,6 +405,7 @@ export default function VoiceScreen() {
         lastScreenRef.current = screen;
 
         if (!prev) return; // first snapshot, nothing to compare
+        if (!askStartedRef.current) return; // still waiting on STT — not a terminal hang yet
 
         // Find differing lines (for logging when hung)
         const currLines = screen.split('\n');
@@ -877,15 +888,52 @@ export default function VoiceScreen() {
       const params = new URLSearchParams({ action: 'create', session: newSessionName.trim() });
       if (dir) params.set('dir', dir);
       if (projectMode) params.set('project_mode', '1');
+      if (logConversation) params.set('log_conversation', '1');
       const res = await fetch(`${serverUrl}/dispatch?${params}`, { method: 'POST', headers: apiHeaders() });
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
       setNewSessionName('');
       setNewSessionDir('');
       setDirEdited(false);
+      setLogConversation(false);
       setSessionError('');
       await loadSessions();
     } catch (e) { setSessionError('Error creating session: ' + e); setTimeout(() => setSessionError(''), 5000); }
     finally { setCreatingSession(false); }
+  }
+
+  // ── Folder picker (connect to an existing project directory) ──────────────
+
+  async function loadFolderPicker(path?: string) {
+    setFolderPickerLoading(true);
+    setFolderPickerError('');
+    try {
+      const params = path ? `&path=${encodeURIComponent(path)}` : '';
+      const r = await fetch(`${serverUrl}/list-dirs?api_key=${encodeURIComponent(serverApiKey)}${params}`);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || `Server error: ${r.status}`);
+      setFolderPickerPath(data.path);
+      setFolderPickerParent(data.parent);
+      setFolderPickerDirs(data.dirs ?? []);
+    } catch (e: any) {
+      setFolderPickerError('Error: ' + (e?.message ?? e));
+    } finally {
+      setFolderPickerLoading(false);
+    }
+  }
+
+  function openFolderPicker() {
+    folderPickerFloorRef.current = projectsDir.trim() || null;
+    setFolderPickerOpen(true);
+    loadFolderPicker(folderPickerFloorRef.current ?? undefined);
+  }
+
+  function chooseFolderPickerResult() {
+    setNewSessionDir(folderPickerPath);
+    setDirEdited(true);
+    if (!newSessionName.trim()) {
+      setNewSessionName(folderPickerPath.split('/').filter(Boolean).pop() ?? '');
+    }
+    setFolderPickerOpen(false);
   }
 
   async function fetchScreen() {
@@ -1109,6 +1157,17 @@ export default function VoiceScreen() {
     }
   }
 
+  async function speakMessage(text: string) {
+    if (status === 'processing' || status === 'speaking') return;
+    cancelledRef.current = false;
+    setStatus('speaking');
+    try {
+      await speak(text);
+    } finally {
+      setStatus(anchorVadActiveRef.current ? 'listening' : 'idle');
+    }
+  }
+
   // ── Send recording to STT → Claude → TTS ──────────────────────────────────
   async function sendRecording() {
     if (!recordingRef.current) return;
@@ -1140,6 +1199,7 @@ export default function VoiceScreen() {
       appendMessage({ role: 'user', text });
 
       lastScreenChangeRef.current = Date.now();
+      askStartedRef.current = true;
       const askRes = await fetch(`${serverUrl}/ask?session=${encodeURIComponent(currentSession)}&lock=${sessionLocking}`, {
         method: 'POST',
         headers: apiHeaders({ 'Content-Type': 'application/json' }),
@@ -1177,6 +1237,7 @@ export default function VoiceScreen() {
       const abort = new AbortController();
       abortControllerRef.current = abort;
       lastScreenChangeRef.current = Date.now();
+      askStartedRef.current = true;
       const askRes = await fetch(`${serverUrl}/ask?session=${encodeURIComponent(currentSession)}&lock=${sessionLocking}`, {
         method: 'POST',
         headers: apiHeaders({ 'Content-Type': 'application/json' }),
@@ -1227,6 +1288,7 @@ export default function VoiceScreen() {
     try {
       appendMessage({ role: 'user', text });
       lastScreenChangeRef.current = Date.now();
+      askStartedRef.current = true;
       const abort = new AbortController();
       abortControllerRef.current = abort;
       const askRes = await fetch(`${serverUrl}/ask?session=${encodeURIComponent(currentSession)}&lock=${sessionLocking}`, {
@@ -1755,22 +1817,33 @@ export default function VoiceScreen() {
               </TouchableOpacity>
             </View>
             <View style={{ height: 12 }} />
-            <TextInput
-              style={styles.pinInput}
-              value={newPin}
-              onChangeText={(v) => { setNewPin(v); setChangePinError(''); }}
-              placeholder="New password"
-              placeholderTextColor="#555"
-              secureTextEntry={!changePinVisible}
-            />
-            <TextInput
-              style={styles.pinInput}
-              value={newPinConfirm}
-              onChangeText={(v) => { setNewPinConfirm(v); setChangePinError(''); }}
-              placeholder="Repeat new password"
-              placeholderTextColor="#555"
-              secureTextEntry={!changePinVisible}
-            />
+            <View style={styles.pinInputRow}>
+              <TextInput
+                style={[styles.pinInput, { flex: 1, marginBottom: 0 }]}
+                value={newPin}
+                onChangeText={(v) => { setNewPin(v); setChangePinError(''); }}
+                placeholder="New password"
+                placeholderTextColor="#555"
+                secureTextEntry={!changePinVisible}
+              />
+              <TouchableOpacity style={styles.pinEye} onPress={() => setChangePinVisible(v => !v)}>
+                <Text style={styles.pinEyeText}>{changePinVisible ? '🙈' : '👁'}</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={{ height: 12 }} />
+            <View style={styles.pinInputRow}>
+              <TextInput
+                style={[styles.pinInput, { flex: 1, marginBottom: 0 }]}
+                value={newPinConfirm}
+                onChangeText={(v) => { setNewPinConfirm(v); setChangePinError(''); }}
+                placeholder="Repeat new password"
+                placeholderTextColor="#555"
+                secureTextEntry={!changePinVisible}
+              />
+              <TouchableOpacity style={styles.pinEye} onPress={() => setChangePinVisible(v => !v)}>
+                <Text style={styles.pinEyeText}>{changePinVisible ? '🙈' : '👁'}</Text>
+              </TouchableOpacity>
+            </View>
             {changePinError ? <Text style={styles.pinError}>{changePinError}</Text> : null}
             <TouchableOpacity style={styles.pinBtn} onPress={changePin}>
               <Text style={styles.pinBtnText}>Save</Text>
@@ -1857,17 +1930,26 @@ export default function VoiceScreen() {
                 placeholderTextColor="#555"
                 autoCapitalize="none"
               />
-              <TextInput
-                style={styles.input}
-                value={newSessionDir}
-                onChangeText={(v) => { setNewSessionDir(v); setDirEdited(true); }}
-                placeholder="Directory"
-                placeholderTextColor="#555"
-                autoCapitalize="none"
-              />
+              <View style={styles.pinInputRow}>
+                <TextInput
+                  style={[styles.input, { flex: 1, marginBottom: 0 }]}
+                  value={newSessionDir}
+                  onChangeText={(v) => { setNewSessionDir(v); setDirEdited(true); }}
+                  placeholder="Directory"
+                  placeholderTextColor="#555"
+                  autoCapitalize="none"
+                />
+                <TouchableOpacity style={styles.pinEye} onPress={openFolderPicker}>
+                  <Text style={styles.pinEyeText}>📁</Text>
+                </TouchableOpacity>
+              </View>
               <View style={styles.settingRow}>
                 <Text style={styles.settingLabel}>Use template: conversation + lab</Text>
                 <Switch value={projectMode} onValueChange={setProjectMode} thumbColor={projectMode ? '#4AE27A' : '#888'} />
+              </View>
+              <View style={styles.settingRow}>
+                <Text style={styles.settingLabel}>Save conversation log</Text>
+                <Switch value={logConversation} onValueChange={setLogConversation} thumbColor={logConversation ? '#4AE27A' : '#888'} />
               </View>
               {sessionError ? <Text style={styles.pinError}>{sessionError}</Text> : null}
               <TouchableOpacity style={styles.modalClose} onPress={createSession} disabled={creatingSession}>
@@ -1952,6 +2034,41 @@ export default function VoiceScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      <Modal visible={folderPickerOpen} transparent animationType="slide" onRequestClose={() => setFolderPickerOpen(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <Text style={styles.modalTitle}>Choose folder</Text>
+            <Text style={{ color: '#888', fontSize: 13, marginBottom: 12 }} numberOfLines={1}>{folderPickerPath}</Text>
+            {folderPickerLoading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <ScrollView style={{ maxHeight: 320 }}>
+                {folderPickerParent !== null && folderPickerPath !== folderPickerFloorRef.current && (
+                  <TouchableOpacity style={styles.sessionRow} onPress={() => loadFolderPicker(folderPickerParent!)}>
+                    <Text style={styles.sessionName}>⬆ ..</Text>
+                  </TouchableOpacity>
+                )}
+                {folderPickerDirs.map(name => (
+                  <TouchableOpacity key={name} style={styles.sessionRow} onPress={() => loadFolderPicker(`${folderPickerPath}/${name}`)}>
+                    <Text style={styles.sessionName}>📁 {name}</Text>
+                  </TouchableOpacity>
+                ))}
+                {!folderPickerDirs.length && !folderPickerLoading && (
+                  <Text style={{ color: '#555', paddingVertical: 12 }}>No subfolders</Text>
+                )}
+              </ScrollView>
+            )}
+            {folderPickerError ? <Text style={styles.pinError}>{folderPickerError}</Text> : null}
+            <TouchableOpacity style={styles.modalClose} onPress={chooseFolderPickerResult}>
+              <Text style={styles.modalCloseText}>✓ Use this folder</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.modalClose, { backgroundColor: '#333', marginTop: 0 }]} onPress={() => setFolderPickerOpen(false)}>
+              <Text style={styles.modalCloseText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* Horizontal pager: page 0 = Claude chat, pages 1+ = shell sessions */}
       <ScrollView
         ref={pagerRef}
@@ -1980,9 +2097,17 @@ export default function VoiceScreen() {
               <View key={i} style={[styles.bubble, msg.role === 'user' ? styles.userBubble : styles.claudeBubble]}>
                 <Text style={[styles.bubbleText, { fontSize }]}>{msg.text}</Text>
                 {msg.role === 'claude' && (
-                  <TouchableOpacity onPress={() => Clipboard.setStringAsync(msg.text)} style={styles.copyBtn}>
-                    <Text style={styles.copyBtnText}>⎘</Text>
-                  </TouchableOpacity>
+                  <View style={styles.claudeActionsRow}>
+                    <View style={{ flex: 1 }} />
+                    <TouchableOpacity onPress={() => speakMessage(msg.text)} style={styles.speakBtn}>
+                      <Text style={styles.copyBtnText}>🔊</Text>
+                    </TouchableOpacity>
+                    <View style={{ flex: 1, alignItems: 'flex-end' }}>
+                      <TouchableOpacity onPress={() => Clipboard.setStringAsync(msg.text)} style={styles.copyBtn}>
+                        <Text style={styles.copyBtnText}>⎘</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
                 )}
                 {msg.role === 'user' && (
                   <TouchableOpacity onPress={() => sendTextContent(msg.text)} style={styles.copyBtn}>
@@ -2337,6 +2462,8 @@ const styles = StyleSheet.create({
   bubble:             { borderRadius: 12, padding: 10, marginBottom: 8, maxWidth: '80%' },
   copyBtn:            { alignSelf: 'flex-end', opacity: 0.5 },
   copyBtnText:        { color: '#fff', fontSize: 18 },
+  claudeActionsRow:   { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
+  speakBtn:           { opacity: 0.5, paddingHorizontal: 6 },
   userBubble:         { backgroundColor: '#4A90E2', alignSelf: 'flex-end' },
   claudeBubble:       { backgroundColor: '#2a2a4e', alignSelf: 'flex-start' },
   bubbleText:         { color: '#fff', fontSize: 15 },

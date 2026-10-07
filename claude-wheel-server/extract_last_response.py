@@ -68,7 +68,7 @@ def extract_last_exchange(transcript: Path) -> tuple[str | None, str | None, str
 
 def get_tmux_workdir(session: str) -> str | None:
     result = subprocess.run(
-        ["tmux", "display-message", "-t", session, "-p", "#{pane_current_path}"],
+        ["tmux", "display-message", "-t", f"={session}:", "-p", "#{pane_current_path}"],
         capture_output=True, text=True
     )
     if result.returncode == 0:
@@ -123,7 +123,8 @@ def main():
     conv_log_mode = os.environ.get("CONVERSATION_LOG", "discussion")
     workdir = get_tmux_workdir(tmux_session)
     if workdir and conv_log_mode != "off":
-        if conv_log_mode == "all" or workdir.endswith("/discussion"):
+        marker = Path(workdir) / ".log-conversation"
+        if conv_log_mode == "all" or workdir.endswith("/discussion") or marker.exists():
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
             conv_log = Path(workdir) / ".conversation.txt"
