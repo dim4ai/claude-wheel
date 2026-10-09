@@ -74,6 +74,8 @@ const LANGUAGES = [
 const STORAGE_KEYS = {
   serverUrl:       'setting_server_url',
   serverApiKey:    'setting_server_api_key',
+  servers:         'setting_servers',
+  currentServerId: 'setting_current_server_id',
   groqApiKey:      'setting_groq_api_key',
   projectsDir:     'setting_projects_dir',
   language:        'setting_language',
@@ -108,6 +110,7 @@ function KeepAwake() { useKeepAwake(); return null; }
 
 type Message = { role: 'user' | 'claude'; text: string };
 type Status  = 'idle' | 'listening' | 'recording' | 'processing' | 'speaking';
+type ServerProfile = { id: string; name: string; url: string; apiKey: string; projectsDir: string };
 
 const PIN_HASH_KEY = 'pin_hash';
 const PIN_SALT_KEY = 'pin_salt';
@@ -338,6 +341,15 @@ export default function VoiceScreen() {
   // ── Configurable settings ─────────────────────────────────────────────────
   const [serverUrl, setServerUrl]         = useState('');
   const [serverApiKey, setServerApiKey]   = useState('');
+  const [servers, setServers]             = useState<ServerProfile[]>([]);
+  const [currentServerId, setCurrentServerId] = useState('');
+  const [serversOpen, setServersOpen]     = useState(false);
+  const [serverFormOpen, setServerFormOpen] = useState(false);
+  const [editingServerId, setEditingServerId] = useState<string | null>(null);
+  const [serverFormName, setServerFormName]     = useState('');
+  const [serverFormUrl, setServerFormUrl]       = useState('');
+  const [serverFormApiKey, setServerFormApiKey] = useState('');
+  const [serverFormDir, setServerFormDir]       = useState('');
   const [groqApiKey, setGroqApiKey]       = useState('');
   const [projectsDir, setProjectsDir]     = useState('');
   const [settingsReady, setSettingsReady] = useState(false);
@@ -562,7 +574,9 @@ export default function VoiceScreen() {
   useEffect(() => {
     if (pinMode !== 'unlocked') return;
     async function loadSettings() {
-      const [url, apiKey, groq, projDir, lang, tts, haptic, gender, lockTimeoutVal, savedSession, sessionLockingVal, hapticOnHangVal, hangTimeoutVal, fontSizeVal, terminalLinesVal, anchorVad, savedWakeWord, savedEndWord] = await Promise.all([
+      const [serversRaw, currentServerIdVal, url, apiKey, groq, projDir, lang, tts, haptic, gender, lockTimeoutVal, savedSession, sessionLockingVal, hapticOnHangVal, hangTimeoutVal, fontSizeVal, terminalLinesVal, anchorVad, savedWakeWord, savedEndWord] = await Promise.all([
+        AsyncStorage.getItem(STORAGE_KEYS.servers),
+        AsyncStorage.getItem(STORAGE_KEYS.currentServerId),
         AsyncStorage.getItem(STORAGE_KEYS.serverUrl),
         AsyncStorage.getItem(STORAGE_KEYS.serverApiKey),
         AsyncStorage.getItem(STORAGE_KEYS.groqApiKey),
@@ -582,10 +596,34 @@ export default function VoiceScreen() {
         AsyncStorage.getItem(STORAGE_KEYS.wakeWord),
         AsyncStorage.getItem(STORAGE_KEYS.endWord),
       ]);
-      if (url)     setServerUrl(decrypt(url));
-      if (apiKey)  setServerApiKey(decrypt(apiKey));
+      let serverList: ServerProfile[] = [];
+      try { serverList = serversRaw ? JSON.parse(decrypt(serversRaw)) : []; } catch { serverList = []; }
+
+      let activeId = currentServerIdVal ?? '';
+      if (serverList.length === 0 && url) {
+        // migrate legacy single-server config into the new servers list
+        const migrated: ServerProfile = {
+          id: 'default',
+          name: 'Default',
+          url: decrypt(url),
+          apiKey: apiKey ? decrypt(apiKey) : '',
+          projectsDir: projDir ? projDir.trim() : '',
+        };
+        serverList = [migrated];
+        activeId = migrated.id;
+        AsyncStorage.setItem(STORAGE_KEYS.servers, encrypt(JSON.stringify(serverList))).catch(() => {});
+        AsyncStorage.setItem(STORAGE_KEYS.currentServerId, activeId).catch(() => {});
+      }
+      setServers(serverList);
+      const activeServer = serverList.find(s => s.id === activeId) ?? serverList[0];
+      if (activeServer) {
+        setCurrentServerId(activeServer.id);
+        setServerUrl(activeServer.url);
+        setServerApiKey(activeServer.apiKey);
+        setProjectsDir(activeServer.projectsDir);
+      }
+
       if (groq)    setGroqApiKey(decrypt(groq));
-      if (projDir) setProjectsDir(projDir.trim());
       if (lang)    setLanguage(lang);
       if (tts !== null) setTtsEnabled(tts === 'true');
       if (haptic)           setHapticStyle(haptic);
@@ -606,11 +644,11 @@ export default function VoiceScreen() {
 
       // Restore open shell sessions, verify they still exist
       const savedShell = await AsyncStorage.getItem(STORAGE_KEYS.openShellSessions);
-      if (savedShell && url) {
+      if (savedShell && activeServer) {
         try {
           const saved: string[] = JSON.parse(decrypt(savedShell));
-          const r = await fetch(`${decrypt(url)}/shell-sessions`, {
-            headers: { 'x-api-key': apiKey ? decrypt(apiKey) : '' },
+          const r = await fetch(`${activeServer.url}/shell-sessions`, {
+            headers: { 'x-api-key': activeServer.apiKey },
           });
           const data = await r.json();
           const existing: string[] = data.sessions ?? [];
@@ -670,6 +708,72 @@ export default function VoiceScreen() {
     if (updates.voiceGender  !== undefined) pairs.push([STORAGE_KEYS.voiceGender,  updates.voiceGender]);
     if (updates.lockTimeout  !== undefined) pairs.push([STORAGE_KEYS.lockTimeout,  String(updates.lockTimeout)]);
     await AsyncStorage.multiSet(pairs);
+  }
+
+  // ── Server profiles (multi-server support) ─────────────────────────────────
+
+  async function persistServers(list: ServerProfile[]) {
+    setServers(list);
+    await AsyncStorage.setItem(STORAGE_KEYS.servers, encrypt(JSON.stringify(list))).catch(() => {});
+  }
+
+  function applyServer(s: ServerProfile) {
+    setCurrentServerId(s.id);
+    setServerUrl(s.url);
+    setServerApiKey(s.apiKey);
+    setProjectsDir(s.projectsDir);
+    setCurrentSession('');
+    setMessages([]);
+    setSessionsList([]);
+    setOpenShellSessions([]);
+    AsyncStorage.setItem(STORAGE_KEYS.currentServerId, s.id).catch(() => {});
+  }
+
+  function openAddServerForm() {
+    setEditingServerId(null);
+    setServerFormName(''); setServerFormUrl(''); setServerFormApiKey(''); setServerFormDir('');
+    setServerFormOpen(true);
+  }
+
+  function openEditServerForm(s: ServerProfile) {
+    setEditingServerId(s.id);
+    setServerFormName(s.name); setServerFormUrl(s.url); setServerFormApiKey(s.apiKey); setServerFormDir(s.projectsDir);
+    setServerFormOpen(true);
+  }
+
+  async function saveServerForm() {
+    const url = serverFormUrl.trim().replace(/\/+$/, '');
+    if (!url) return;
+    const entry: ServerProfile = {
+      id: editingServerId ?? Date.now().toString(),
+      name: serverFormName.trim() || url,
+      url,
+      apiKey: serverFormApiKey.trim(),
+      projectsDir: serverFormDir.trim(),
+    };
+    const wasEmpty = servers.length === 0;
+    const next = editingServerId
+      ? servers.map(s => s.id === editingServerId ? entry : s)
+      : [...servers, entry];
+    await persistServers(next);
+    setServerFormOpen(false);
+    if (entry.id === currentServerId || wasEmpty) applyServer(entry);
+  }
+
+  async function deleteServerEntry(id: string) {
+    const next = servers.filter(s => s.id !== id);
+    await persistServers(next);
+    if (id === currentServerId) {
+      if (next.length) {
+        applyServer(next[0]);
+      } else {
+        setCurrentServerId('');
+        setServerUrl('');
+        setServerApiKey('');
+        setProjectsDir('');
+        AsyncStorage.setItem(STORAGE_KEYS.currentServerId, '').catch(() => {});
+      }
+    }
   }
 
   // Health check
@@ -873,7 +977,7 @@ export default function VoiceScreen() {
     setSessionError('');
     const baseDir = projectsDir.trim();
     if (!baseDir) {
-      setSessionError('Set the working directory in settings (General → Projects directory)');
+      setSessionError('Set the projects directory for this server (Connection → Manage servers)');
       setTimeout(() => setSessionError(''), 5000);
       return;
     }
@@ -1644,17 +1748,6 @@ export default function VoiceScreen() {
                   }}
                 />
               </View>
-              <Text style={styles.inputLabel}>Projects directory</Text>
-              <TextInput
-                style={styles.input}
-                value={projectsDir}
-                onChangeText={(v) => setProjectsDir(v.trimStart())}
-                onEndEditing={() => { const trimmed = projectsDir.trim(); setProjectsDir(trimmed); saveSettings({ projectsDir: trimmed }); }}
-                onBlur={() => { const trimmed = projectsDir.trim(); setProjectsDir(trimmed); saveSettings({ projectsDir: trimmed }); }}
-                placeholder="/home/user/projects"
-                placeholderTextColor="#555"
-                autoCapitalize="none"
-              />
             </>}
 
             <TouchableOpacity style={styles.sectionHeader} onPress={() => setSecAudio(v => !v)}>
@@ -1748,27 +1841,14 @@ export default function VoiceScreen() {
               <Text style={styles.sectionHeaderText}>Connection {secConnection ? '▲' : '▼'}</Text>
             </TouchableOpacity>
             {secConnection && <>
-              <Text style={styles.inputLabel}>Server URL</Text>
-              <TextInput
-                style={styles.input}
-                value={serverUrl}
-                onChangeText={setServerUrl}
-                onEndEditing={() => saveSettings({ serverUrl })}
-                placeholder="https://your-domain.duckdns.org/agent"
-                placeholderTextColor="#555"
-                autoCapitalize="none"
-                keyboardType="url"
-              />
-              <Text style={styles.inputLabel}>Server API Key</Text>
-              <TextInput
-                style={styles.input}
-                value={serverApiKey}
-                onChangeText={setServerApiKey}
-                onEndEditing={() => saveSettings({ serverApiKey })}
-                placeholder="your-server-api-key"
-                placeholderTextColor="#555"
-                autoCapitalize="none"
-              />
+              <View style={styles.settingRow}>
+                <Text style={[styles.settingLabel, { flex: 1 }]} numberOfLines={1}>
+                  Server: {servers.find(s => s.id === currentServerId)?.name ?? 'none configured'}
+                </Text>
+              </View>
+              <TouchableOpacity style={styles.modalClose} onPress={() => { setServersOpen(true); setSettingsOpen(false); }}>
+                <Text style={styles.modalCloseText}>🖥 Manage servers</Text>
+              </TouchableOpacity>
               <Text style={styles.inputLabel}>STT API Key</Text>
               <TextInput
                 style={styles.input}
@@ -1792,6 +1872,88 @@ export default function VoiceScreen() {
             ))}
 
             <TouchableOpacity style={styles.modalClose} onPress={() => setSettingsOpen(false)}>
+              <Text style={styles.modalCloseText}>Close</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Servers Modal */}
+      <Modal visible={serversOpen} transparent animationType="slide" onRequestClose={() => setServersOpen(false)}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <ScrollView style={styles.modalSheet} keyboardShouldPersistTaps="handled">
+            <Text style={styles.modalTitle}>Servers</Text>
+
+            {servers.map(s => (
+              <View key={s.id} style={styles.sessionRow}>
+                <TouchableOpacity style={{ flex: 1 }} onPress={() => { applyServer(s); setServersOpen(false); }}>
+                  <Text style={styles.sessionName}>{s.id === currentServerId ? '🟢 ' : ''}{s.name}</Text>
+                  <Text style={{ color: '#888', fontSize: 12 }} numberOfLines={1}>{s.url}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => openEditServerForm(s)} style={styles.sessionCloseBtn}>
+                  <Text style={{ color: '#4A90E2', fontSize: 16 }}>✎</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => deleteServerEntry(s.id)} style={styles.sessionCloseBtn}>
+                  <Text style={styles.sessionCloseText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+            {!servers.length && <Text style={{ color: '#555', paddingVertical: 8 }}>No servers yet</Text>}
+
+            {!serverFormOpen && (
+              <TouchableOpacity style={[styles.modalClose, { marginTop: 16 }]} onPress={openAddServerForm}>
+                <Text style={styles.modalCloseText}>+ Add server</Text>
+              </TouchableOpacity>
+            )}
+
+            {serverFormOpen && <>
+              <View style={{ height: 8 }} />
+              <Text style={styles.inputLabel}>Name</Text>
+              <TextInput
+                style={styles.input}
+                value={serverFormName}
+                onChangeText={setServerFormName}
+                placeholder="e.g. Home server"
+                placeholderTextColor="#555"
+                autoCapitalize="none"
+              />
+              <Text style={styles.inputLabel}>Server URL</Text>
+              <TextInput
+                style={styles.input}
+                value={serverFormUrl}
+                onChangeText={setServerFormUrl}
+                placeholder="https://your-domain.duckdns.org/agent"
+                placeholderTextColor="#555"
+                autoCapitalize="none"
+                keyboardType="url"
+              />
+              <Text style={styles.inputLabel}>Server API Key</Text>
+              <TextInput
+                style={styles.input}
+                value={serverFormApiKey}
+                onChangeText={setServerFormApiKey}
+                placeholder="your-server-api-key"
+                placeholderTextColor="#555"
+                autoCapitalize="none"
+              />
+              <Text style={styles.inputLabel}>Projects directory</Text>
+              <TextInput
+                style={styles.input}
+                value={serverFormDir}
+                onChangeText={setServerFormDir}
+                placeholder="/home/user/projects"
+                placeholderTextColor="#555"
+                autoCapitalize="none"
+              />
+              <TouchableOpacity style={styles.modalClose} onPress={saveServerForm} disabled={!serverFormUrl.trim()}>
+                <Text style={styles.modalCloseText}>{editingServerId ? 'Save changes' : 'Add'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalClose, { backgroundColor: '#333', marginTop: 0 }]} onPress={() => setServerFormOpen(false)}>
+                <Text style={styles.modalCloseText}>Cancel</Text>
+              </TouchableOpacity>
+            </>}
+
+            <TouchableOpacity style={[styles.modalClose, { backgroundColor: '#333', marginTop: 16 }]} onPress={() => { setServersOpen(false); setServerFormOpen(false); setSettingsOpen(true); }}>
               <Text style={styles.modalCloseText}>Close</Text>
             </TouchableOpacity>
           </ScrollView>

@@ -165,13 +165,26 @@ app = FastAPI()
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 _HALLUCINATIONS = {
-    "продолжение следует", "продолжение следует...", "субтитры сделал дина нечаева",
+    "продолжение следует", "субтитры сделал дина нечаева",
     "субтитры добавил дина нечаева", "редактор субтитров", "www.tvsubtitles.net",
     "спасибо за просмотр", "подпишитесь на канал",
 }
 
-def is_hallucination(text: str) -> bool:
-    return text.strip().lower().rstrip('.').strip() in _HALLUCINATIONS
+def strip_hallucinations(text: str) -> str:
+    """Whisper sometimes tacks one of these stock phrases onto the end of a
+    transcript when real speech trails off into silence. Strip it off instead
+    of discarding the whole transcript, since the real speech before it is
+    still valid."""
+    t = text.strip()
+    while True:
+        core = t.rstrip(' .…').strip()
+        lower = core.lower()
+        for phrase in _HALLUCINATIONS:
+            if lower == phrase or lower.endswith(' ' + phrase):
+                t = core[:len(core) - len(phrase)].rstrip(' ,.-—')
+                break
+        else:
+            return core
 
 
 # ── Auth ────────────────────────────────────────────────────────────────────
@@ -204,9 +217,7 @@ async def speech_to_text(audio: UploadFile = File(...), language: str = Query(No
             if lang:
                 kwargs["language"] = lang
             result = client.audio.transcriptions.create(**kwargs)
-        text = result.text.strip()
-        if is_hallucination(text):
-            return {"text": ""}
+        text = strip_hallucinations(result.text.strip())
         return {"text": text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
