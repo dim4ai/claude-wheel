@@ -544,7 +544,7 @@ export default function VoiceScreen() {
   useEffect(() => {
     if (!currentSession) return;
     isLoadingMessagesRef.current = true;
-    AsyncStorage.getItem(`messages_${currentSession}`)
+    AsyncStorage.getItem(`messages_${currentServerId}_${currentSession}`)
       .then(saved => {
         if (saved) {
           const json = decrypt(saved);
@@ -555,11 +555,11 @@ export default function VoiceScreen() {
       })
       .catch(() => {})
       .finally(() => { isLoadingMessagesRef.current = false; });
-  }, [currentSession]);
+  }, [currentServerId, currentSession]);
 
   useEffect(() => {
     if (!currentSession || isLoadingMessagesRef.current) return;
-    AsyncStorage.setItem(`messages_${currentSession}`, encrypt(JSON.stringify(messages))).catch(() => {});
+    AsyncStorage.setItem(`messages_${currentServerId}_${currentSession}`, encrypt(JSON.stringify(messages))).catch(() => {});
   }, [messages]);
 
   function appendMessage(msg: Message) {
@@ -964,7 +964,7 @@ export default function VoiceScreen() {
             await fetch(`${serverUrl}/dispatch?action=recreate&session=${encodeURIComponent(name)}`, {
               method: 'POST', headers: apiHeaders(),
             });
-            await AsyncStorage.removeItem(`messages_${name}`);
+            await AsyncStorage.removeItem(`messages_${currentServerId}_${name}`);
             setMessages([]);
           } catch {}
         }},

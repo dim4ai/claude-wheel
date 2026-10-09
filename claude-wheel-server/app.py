@@ -354,13 +354,28 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
 
 PROJECT_TEMPLATE = os.path.join(os.path.dirname(SESSIONS_CONF), "..", "templates", "new-project")
 
-def _trust_session(name: str, path: str):
-    """Start Claude in a tmux session to accept trust prompt, then kill it."""
+def _trust_session(name: str, path: str, timeout: int = 15):
+    """Start Claude in a tmux session, accept the trust-folder prompt if it
+    appears, then kill it. The prompt defaults to "No, exit" — plain Enter
+    would select that, not trust — so this polls for the dialog text and,
+    once seen, sends Down (to "Yes, I trust this folder") then Enter."""
     subprocess.run(["tmux", "new-session", "-d", "-s", name, "-c", path])
     subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "claude", "Enter"])
-    time.sleep(3)
-    subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter", ""])
-    time.sleep(1)
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        screen = subprocess.run(
+            ["tmux", "capture-pane", "-t", tmux_target(name), "-p"],
+            capture_output=True, text=True
+        ).stdout.lower()
+        if "yes," in screen:
+            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Down"])
+            time.sleep(0.3)
+            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"])
+            time.sleep(1)
+            break
+        time.sleep(0.5)
+
     subprocess.run(["tmux", "kill-session", "-t", tmux_target(name)], capture_output=True)
 
 def _set_log_marker(work_dir: str, enable: bool):
