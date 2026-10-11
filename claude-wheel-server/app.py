@@ -237,14 +237,28 @@ EDGE_TTS_VOICES = {
     'ja': {'female': 'ja-JP-NanamiNeural',    'male': 'ja-JP-KeitaNeural'},
 }
 
-async def _tts_chunk(text: str, voice: str) -> bytes:
-    import base64 as _b64
-    communicate = edge_tts.Communicate(text, voice)
-    buf = io.BytesIO()
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            buf.write(chunk["data"])
-    return buf.getvalue()
+_TTS_CONCURRENCY = asyncio.Semaphore(4)
+
+async def _tts_chunk(text: str, voice: str, retries: int = 3) -> bytes:
+    """edge-tts talks to an unofficial Microsoft endpoint that rejects some
+    connections under parallel chunk load (WSServerHandshakeError 403) —
+    cap concurrency and retry with backoff; the combination clears it in
+    practice even for long, many-chunk responses."""
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            async with _TTS_CONCURRENCY:
+                communicate = edge_tts.Communicate(text, voice)
+                buf = io.BytesIO()
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        buf.write(chunk["data"])
+                return buf.getvalue()
+        except Exception as e:
+            last_exc = e
+            if attempt < retries:
+                await asyncio.sleep(0.6 * (attempt + 1))
+    raise last_exc
 
 @app.api_route("/tts", methods=["GET", "POST"])
 async def text_to_speech(
