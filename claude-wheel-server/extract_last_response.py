@@ -13,8 +13,14 @@ from pathlib import Path
 
 
 def get_tmux_session() -> str | None:
+    # Outside tmux, `display-message` without -t still answers with the most
+    # recently used session, so replies from a plain-terminal Claude would leak
+    # into that session's log. Only trust the pane we are actually running in.
+    pane = os.environ.get("TMUX_PANE")
+    if not os.environ.get("TMUX") or not pane:
+        return None
     result = subprocess.run(
-        ["tmux", "display-message", "-p", "#S"],
+        ["tmux", "display-message", "-t", pane, "-p", "#S"],
         capture_output=True, text=True
     )
     if result.returncode == 0:

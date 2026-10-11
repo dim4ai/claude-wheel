@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import difflib
 import io
+import json
 import os
 import re
 import shutil
@@ -34,6 +35,7 @@ WATCHDOG_SESSION  = os.environ.get("WATCHDOG_SESSION", "cw-watchdog")
 WATCHDOG_DIR      = os.path.join(os.path.dirname(__file__), "watchdog")
 FORMAT_SESSION    = os.environ.get("FORMAT_SESSION", "cw-format")
 FORMAT_DIR        = os.path.join(os.path.dirname(__file__), "format")
+FORMAT_MODE       = os.environ.get("FORMAT_MODE", "auto")  # auto | always | off
 
 def _validate_api_key(key: str):
     errors = []
@@ -356,7 +358,7 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
                 continue
             if "ENDENDENDENDEND" in content:
                 response = content.split("ENDENDENDENDEND")[0].strip()
-                if "●" in response:
+                if needs_formatting(response):
                     response = await format_response(response)
                 response = strip_markdown(response)
                 return {"text": response}
@@ -366,31 +368,83 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
 
 # ── Dispatch endpoint ───────────────────────────────────────────────────────
 
-PROJECT_TEMPLATE = os.path.join(os.path.dirname(SESSIONS_CONF), "..", "templates", "new-project")
+PROJECT_TEMPLATE = os.path.join(os.path.dirname(__file__), "templates", "new-project")
 
-def _trust_session(name: str, path: str, timeout: int = 15):
-    """Start Claude in a tmux session, accept the trust-folder prompt if it
-    appears, then kill it. The prompt defaults to "No, exit" — plain Enter
-    would select that, not trust — so this polls for the dialog text and,
-    once seen, sends Down (to "Yes, I trust this folder") then Enter."""
+def _is_trusted(path: str) -> bool:
+    """True if Claude Code has accepted the trust dialog for path or any of its
+    parents (trust is inherited by subdirectories)."""
+    try:
+        with open(os.path.expanduser("~/.claude.json")) as f:
+            projects = json.load(f).get("projects", {})
+    except (OSError, ValueError):
+        return False
+    p = os.path.abspath(path)
+    while True:
+        if projects.get(p, {}).get("hasTrustDialogAccepted"):
+            return True
+        parent = os.path.dirname(p)
+        if parent == p:
+            return False
+        p = parent
+
+def _trust_session(name: str, path: str, timeout: int = 30):
+    """Start Claude in a tmux session, accept the trust-folder prompt, then kill it.
+
+    The prompt focuses "No, exit" by default, so plain Enter exits instead of
+    trusting. It also ignores keys that arrive right after it renders (typeahead
+    guard), so pressing Down immediately gets dropped and the following Enter
+    lands on "No, exit". Hence: wait for the dialog to settle, press Down, and
+    press Enter only once the cursor is confirmed on "Yes, I trust this folder".
+    Success is verified via ~/.claude.json, not by screen scraping."""
+    if _is_trusted(path):
+        return True
+
+    def capture():
+        return subprocess.run(
+            ["tmux", "capture-pane", "-t", tmux_target(name), "-p"],
+            capture_output=True, text=True
+        ).stdout
+
+    def yes_focused(screen: str) -> bool:
+        return any("❯" in line and "yes, i trust" in line.lower() for line in screen.splitlines())
+
     subprocess.run(["tmux", "new-session", "-d", "-s", name, "-c", path])
     subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "claude", "Enter"])
 
+    trusted = False
     deadline = time.time() + timeout
     while time.time() < deadline:
-        screen = subprocess.run(
-            ["tmux", "capture-pane", "-t", tmux_target(name), "-p"],
-            capture_output=True, text=True
-        ).stdout.lower()
-        if "yes," in screen:
-            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Down"])
-            time.sleep(0.3)
-            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"])
-            time.sleep(1)
-            break
         time.sleep(0.5)
+        if _is_trusted(path):
+            trusted = True
+            break
+        screen = capture()
+        if "yes, i trust" not in screen.lower():
+            continue
+        time.sleep(1.5)  # let the typeahead guard expire
+        if not yes_focused(capture()):
+            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Down"])
+            time.sleep(0.5)
+        if yes_focused(capture()):
+            subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "Enter"])
+            # wait for Claude to persist the decision
+            end = time.time() + 5
+            while time.time() < end and not _is_trusted(path):
+                time.sleep(0.3)
+            trusted = _is_trusted(path)
+            break
+        # Down was swallowed — loop and retry
 
+    print(f"[trust] {path}: {'trusted' if trusted else 'NOT trusted'}", flush=True)
     subprocess.run(["tmux", "kill-session", "-t", tmux_target(name)], capture_output=True)
+    return trusted
+
+async def ensure_trusted(name: str, path: str):
+    """Make sure Claude won't stop on the trust prompt in path before an
+    unattended session is started there. No-op when already trusted."""
+    os.makedirs(path, exist_ok=True)
+    if not _is_trusted(path):
+        await asyncio.to_thread(_trust_session, name, path)
 
 def _set_log_marker(work_dir: str, enable: bool):
     marker = os.path.join(work_dir, ".log-conversation")
@@ -482,8 +536,8 @@ async def dispatch(action: str = Query(...), session: str = Query(None), dir: st
             lab_name  = f"{session}-lab"
             disc_name = f"{session}-discussion"
 
-            _trust_session(lab_name,  lab_dir)
-            _trust_session(disc_name, disc_dir)
+            await ensure_trusted(lab_name,  lab_dir)
+            await ensure_trusted(disc_name, disc_dir)
 
             _set_log_marker(work_dir, log_conversation == "1")
 
@@ -495,11 +549,10 @@ async def dispatch(action: str = Query(...), session: str = Query(None), dir: st
             print(f"[dispatch] created: {lab_name}, {disc_name}", flush=True)
             return {"ok": True, "sessions": [lab_name, disc_name]}
         else:
-            os.makedirs(work_dir, exist_ok=True)
             check = subprocess.run(["tmux", "has-session", "-t", tmux_target(session)], capture_output=True)
             if check.returncode == 0:
                 raise HTTPException(status_code=409, detail=f"Session '{session}' already exists")
-            _trust_session(session, work_dir)
+            await ensure_trusted(session, work_dir)
             _set_log_marker(work_dir, log_conversation == "1")
             async with sessions_conf_lock:
                 with open(SESSIONS_CONF, "a") as f:
@@ -610,7 +663,7 @@ async def watchdog_endpoint(body: WatchdogRequest, _=Depends(verify_key)):
         was_running = is_running(WATCHDOG_SESSION)
         if was_running:
             subprocess.run(["tmux", "kill-session", "-t", tmux_target(WATCHDOG_SESSION)], capture_output=True)
-        os.makedirs(WATCHDOG_DIR, exist_ok=True)
+        await ensure_trusted(WATCHDOG_SESSION, WATCHDOG_DIR)
         subprocess.run(["tmux", "new-session", "-d", "-s", WATCHDOG_SESSION, "-c", WATCHDOG_DIR])
         subprocess.run(["tmux", "send-keys", "-t", tmux_target(WATCHDOG_SESSION), "claude", "Enter"])
         print(f"[watchdog] started fresh session (was_running={was_running}), waiting for ready...", flush=True)
@@ -693,11 +746,32 @@ def strip_markdown(text: str) -> str:
     text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
     return text.strip()
 
+_PATH_RE = re.compile(r'(?:~|\.{0,2})/[\w.\-]+/[\w./\-]+|\b[\w\-]+\.(?:py|ts|tsx|js|jsx|json|md|sh|yml|yaml|toml|txt|html|css|sql|env)\b|https?://\S+')
+
+def needs_formatting(text: str) -> bool:
+    """Whether a reply is hard to follow by ear and should be rewritten by the
+    format session. strip_markdown only removes symbols; it can't turn code,
+    tables, or path-heavy text into something listenable."""
+    if FORMAT_MODE == "off":
+        return False
+    if FORMAT_MODE == "always":
+        return True
+    if "●" in text or "```" in text:
+        return True
+    lines = text.splitlines()
+    if sum(1 for l in lines if re.match(r'^\s*\|.*\|\s*$', l)) >= 2:
+        return True
+    if sum(1 for l in lines if re.match(r'^\s*(?:[-*]|\d+\.)\s+', l)) >= 5:
+        return True
+    if len(_PATH_RE.findall(text)) >= 3:
+        return True
+    return False
+
 async def format_response(raw: str) -> str:
-    """Clean raw Claude Code output for TTS: strip tool calls, markdown, join fragments."""
+    """Rewrite a reply for listening via the format session (see format/CLAUDE.md)."""
     async with format_lock:
         if not is_running(FORMAT_SESSION):
-            os.makedirs(FORMAT_DIR, exist_ok=True)
+            await ensure_trusted(FORMAT_SESSION, FORMAT_DIR)
             subprocess.run(["tmux", "new-session", "-d", "-s", FORMAT_SESSION, "-c", FORMAT_DIR])
             subprocess.run(["tmux", "send-keys", "-t", tmux_target(FORMAT_SESSION), "claude", "Enter"])
             await wait_for_claude_ready(FORMAT_SESSION, timeout=30)
@@ -732,7 +806,7 @@ async def format_response(raw: str) -> str:
 async def _restart_format_session():
     async with format_lock:
         subprocess.run(["tmux", "kill-session", "-t", tmux_target(FORMAT_SESSION)], capture_output=True)
-        os.makedirs(FORMAT_DIR, exist_ok=True)
+        await ensure_trusted(FORMAT_SESSION, FORMAT_DIR)
         subprocess.run(["tmux", "new-session", "-d", "-s", FORMAT_SESSION, "-c", FORMAT_DIR])
         subprocess.run(["tmux", "send-keys", "-t", tmux_target(FORMAT_SESSION), "claude", "Enter"])
         await wait_for_claude_ready(FORMAT_SESSION, timeout=30)
