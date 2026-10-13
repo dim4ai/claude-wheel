@@ -108,7 +108,7 @@ const HAPTIC_OPTIONS = [
 
 function KeepAwake() { useKeepAwake(); return null; }
 
-type Message = { role: 'user' | 'claude'; text: string };
+type Message = { role: 'user' | 'claude'; text: string; speechText?: string };
 type Status  = 'idle' | 'listening' | 'recording' | 'processing' | 'speaking';
 type ServerProfile = { id: string; name: string; url: string; apiKey: string; projectsDir: string };
 
@@ -1310,13 +1310,13 @@ export default function VoiceScreen() {
         body: JSON.stringify({ text }),
         signal: abort.signal,
       });
-      const { text: claudeText = 'No response' } = await askRes.json();
-      appendMessage({ role: 'claude', text: claudeText });
+      const { text: claudeText = 'No response', speech_text } = await askRes.json();
+      appendMessage({ role: 'claude', text: claudeText, speechText: speech_text });
       refreshSession();
 
       if (ttsEnabled) {
         setStatus('speaking');
-        await speak(claudeText);
+        await speak(speech_text || claudeText);
       }
 
     } catch (e: any) {
@@ -1348,12 +1348,12 @@ export default function VoiceScreen() {
         body: JSON.stringify({ text }),
         signal: abort.signal,
       });
-      const { text: claudeText = 'No response' } = await askRes.json();
-      appendMessage({ role: 'claude', text: claudeText });
+      const { text: claudeText = 'No response', speech_text } = await askRes.json();
+      appendMessage({ role: 'claude', text: claudeText, speechText: speech_text });
       refreshSession();
       if (ttsEnabled) {
         setStatus('speaking');
-        await speak(claudeText);
+        await speak(speech_text || claudeText);
       }
     } catch (e: any) {
       if (e?.name !== 'AbortError') showError('Error: ' + e);
@@ -1401,12 +1401,12 @@ export default function VoiceScreen() {
         body: JSON.stringify({ text }),
         signal: abort.signal,
       });
-      const { text: claudeText = 'No response' } = await askRes.json();
-      appendMessage({ role: 'claude', text: claudeText });
+      const { text: claudeText = 'No response', speech_text } = await askRes.json();
+      appendMessage({ role: 'claude', text: claudeText, speechText: speech_text });
       refreshSession();
       if (ttsEnabled) {
         setStatus('speaking');
-        await speak(claudeText);
+        await speak(speech_text || claudeText);
       }
     } catch (e: any) {
       if (e?.name !== 'AbortError') showError('Error: ' + e);
@@ -2049,6 +2049,8 @@ export default function VoiceScreen() {
       <Modal visible={sessionsOpen} transparent animationType="slide" onRequestClose={() => setSessionsOpen(false)}>
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <ScrollView style={styles.modalSheet} onStartShouldSetResponder={() => true} keyboardShouldPersistTaps="handled">
+            <Text style={styles.modalTitle}>🖥 {servers.find(s => s.id === currentServerId)?.name ?? 'No server'}</Text>
+
             <TouchableOpacity style={styles.sectionHeader} onPress={() => setSessionsExpanded(v => !v)}>
               <Text style={styles.sectionHeaderText}>Claude sessions {sessionsExpanded ? '▲' : '▼'}</Text>
             </TouchableOpacity>
@@ -2261,7 +2263,7 @@ export default function VoiceScreen() {
                 {msg.role === 'claude' && (
                   <View style={styles.claudeActionsRow}>
                     <View style={{ flex: 1 }} />
-                    <TouchableOpacity onPress={() => speakMessage(msg.text)} style={styles.speakBtn}>
+                    <TouchableOpacity onPress={() => speakMessage(msg.speechText ?? msg.text)} style={styles.speakBtn}>
                       <Text style={styles.copyBtnText}>🔊</Text>
                     </TouchableOpacity>
                     <View style={{ flex: 1, alignItems: 'flex-end' }}>

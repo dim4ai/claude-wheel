@@ -11,6 +11,7 @@ import difflib
 import io
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -168,7 +169,8 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 
 _HALLUCINATIONS = {
     "продолжение следует", "субтитры сделал дина нечаева",
-    "субтитры добавил дина нечаева", "редактор субтитров", "www.tvsubtitles.net",
+    "субтитры добавил дина нечаева", "субтитры сделал dimatorzok",
+    "редактор субтитров", "www.tvsubtitles.net",
     "спасибо за просмотр", "подпишитесь на канал",
 }
 
@@ -241,11 +243,13 @@ EDGE_TTS_VOICES = {
 
 _TTS_CONCURRENCY = asyncio.Semaphore(4)
 
-async def _tts_chunk(text: str, voice: str, retries: int = 3) -> bytes:
-    """edge-tts talks to an unofficial Microsoft endpoint that rejects some
-    connections under parallel chunk load (WSServerHandshakeError 403) —
-    cap concurrency and retry with backoff; the combination clears it in
-    practice even for long, many-chunk responses."""
+async def _tts_chunk(text: str, voice: str, retries: int = 5) -> bytes:
+    """edge-tts talks to an unofficial Microsoft endpoint that rejects a large
+    fraction of connections outright (WSServerHandshakeError 403), independent
+    of our own concurrency — observed ~40-50% per-attempt failure rate during
+    Microsoft-side throttling. Cap concurrency and retry with jittered backoff;
+    jitter matters because simultaneous chunks that fail together would
+    otherwise retry in lockstep and hit the same throttling window again."""
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
         try:
@@ -259,7 +263,7 @@ async def _tts_chunk(text: str, voice: str, retries: int = 3) -> bytes:
         except Exception as e:
             last_exc = e
             if attempt < retries:
-                await asyncio.sleep(0.6 * (attempt + 1))
+                await asyncio.sleep(0.5 * (attempt + 1) + random.uniform(0, 0.4))
     raise last_exc
 
 @app.api_route("/tts", methods=["GET", "POST"])
@@ -358,10 +362,14 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
                 continue
             if "ENDENDENDENDEND" in content:
                 response = content.split("ENDENDENDENDEND")[0].strip()
+                # Keep the real reply in "text" (for display/copy) even when it
+                # gets rewritten for listening — otherwise the user loses the
+                # actual command/path they needed, left with only a spoken
+                # paraphrase of it.
+                result = {"text": strip_markdown(response)}
                 if needs_formatting(response):
-                    response = await format_response(response)
-                response = strip_markdown(response)
-                return {"text": response}
+                    result["speech_text"] = strip_markdown(await format_response(response))
+                return result
 
     raise HTTPException(status_code=504, detail="Claude response timeout")
 
