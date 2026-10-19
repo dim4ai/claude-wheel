@@ -46,6 +46,27 @@ object WavUtil {
         return if (sampleRate == 16000) mono else resample(mono, sampleRate, 16000)
     }
 
+    /** Writes 16-bit PCM mono 16kHz WAV to `path` from raw samples. */
+    fun writeMono16k(path: String, samples: ShortArray) {
+        val dataSize = samples.size * 2
+        val bb = ByteBuffer.allocate(44 + dataSize).order(ByteOrder.LITTLE_ENDIAN)
+        bb.put("RIFF".toByteArray(Charsets.US_ASCII))
+        bb.putInt(36 + dataSize)
+        bb.put("WAVE".toByteArray(Charsets.US_ASCII))
+        bb.put("fmt ".toByteArray(Charsets.US_ASCII))
+        bb.putInt(16) // fmt chunk size
+        bb.putShort(1) // PCM
+        bb.putShort(1) // mono
+        bb.putInt(16000) // sample rate
+        bb.putInt(16000 * 2) // byte rate
+        bb.putShort(2) // block align
+        bb.putShort(16) // bits per sample
+        bb.put("data".toByteArray(Charsets.US_ASCII))
+        bb.putInt(dataSize)
+        for (s in samples) bb.putShort(s)
+        File(path).writeBytes(bb.array())
+    }
+
     private fun resample(audio: DoubleArray, fromRate: Int, toRate: Int): DoubleArray {
         val newLength = (audio.size.toLong() * toRate / fromRate).toInt()
         val out = DoubleArray(newLength)

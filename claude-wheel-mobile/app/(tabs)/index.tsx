@@ -19,9 +19,10 @@ import CryptoJS from 'crypto-js';
 };
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
-import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { VolumeManager, RINGER_MODE } from 'react-native-volume-manager';
+import Slider from '@react-native-community/slider';
 import { startBluetoothSco, stopBluetoothSco } from 'bluetooth-sco';
+import * as WakeWordDetector from 'wakeword-detector';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
@@ -34,8 +35,6 @@ const semverLt = (a: string, b: string) => {
   for (let i = 0; i < 3; i++) { if ((pa[i]??0) < (pb[i]??0)) return true; if ((pa[i]??0) > (pb[i]??0)) return false; }
   return false;
 };
-const DEFAULT_WAKE_WORD = '';
-const DEFAULT_END_WORD = '';
 
 function levenshtein(a: string, b: string): number {
   const m = a.length, n = b.length;
@@ -81,8 +80,9 @@ const STORAGE_KEYS = {
   language:        'setting_language',
   ttsEnabled:      'setting_tts_enabled',
   anchorVadMode:   'setting_anchor_vad_mode',
-  wakeWord:        'setting_wake_word',
-  endWord:         'setting_end_word',
+  wwThreshold:     'setting_ww_threshold',
+  wwReferences:    'setting_ww_references',
+  wwTriggerWord:   'setting_ww_trigger_word',
   currentSession:  'setting_current_session',
   sessionLocking:  'setting_session_locking',
   hapticOnHang:    'setting_haptic_on_hang',
@@ -233,12 +233,21 @@ export default function VoiceScreen() {
 
   const [status, setStatus]       = useState<Status>('idle');
   const [anchorVadMode, setAnchorVadMode] = useState(false);
-  const [anchorTranscript, setAnchorTranscript] = useState('');
-  const [wakeWord, setWakeWord] = useState(DEFAULT_WAKE_WORD);
-  const [endWord, setEndWord]   = useState(DEFAULT_END_WORD);
-  const wakeWordRef = useRef(DEFAULT_WAKE_WORD);
-  const endWordRef  = useRef(DEFAULT_END_WORD);
   const [ttsEnabled, setTtsEnabled] = useState(true);
+  const [wwTestOpen, setWwTestOpen] = useState(false);
+  const [wwSamples, setWwSamples] = useState<number[][]>([]);
+  const [wwRecording, setWwRecording] = useState(false);
+  const [wwListening, setWwListening] = useState(false);
+  const [wwScore, setWwScore] = useState<number | null>(null);
+  const [wwLog, setWwLog] = useState<string[]>([]);
+  const WW_SAMPLE_COUNT = 5;
+  const [wwThreshold, setWwThreshold] = useState(0.65);
+  const wwThresholdRef = useRef(0.65);
+  const [wwTriggerWord, setWwTriggerWord] = useState('привет');
+  const wwTriggerWordRef = useRef('привет');
+  const wwPhaseRef = useRef<'waiting' | 'recording'>('waiting');
+  const wwCooldownUntilRef = useRef(0);
+  const wwRecordingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [error, setError]       = useState('');
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -526,22 +535,6 @@ export default function VoiceScreen() {
   }, [messages]);
 
   useEffect(() => {
-    const show = Keyboard.addListener('keyboardDidShow', () => {
-      if (!anchorVadActiveRef.current) return;
-      anchorKeyboardOpenRef.current = true;
-      ExpoSpeechRecognitionModule.stop();
-    });
-    const hide = Keyboard.addListener('keyboardDidHide', () => {
-      if (!anchorVadActiveRef.current) return;
-      anchorKeyboardOpenRef.current = false;
-      if (anchorPhaseRef.current !== 'sending' && !anchorManualSendRef.current) {
-        setTimeout(() => startSttSession(), 300);
-      }
-    });
-    return () => { show.remove(); hide.remove(); };
-  }, []);
-
-  useEffect(() => {
     if (!currentSession) return;
     isLoadingMessagesRef.current = true;
     AsyncStorage.getItem(`messages_${currentServerId}_${currentSession}`)
@@ -574,7 +567,7 @@ export default function VoiceScreen() {
   useEffect(() => {
     if (pinMode !== 'unlocked') return;
     async function loadSettings() {
-      const [serversRaw, currentServerIdVal, url, apiKey, groq, projDir, lang, tts, haptic, gender, lockTimeoutVal, savedSession, sessionLockingVal, hapticOnHangVal, hangTimeoutVal, fontSizeVal, terminalLinesVal, anchorVad, savedWakeWord, savedEndWord] = await Promise.all([
+      const [serversRaw, currentServerIdVal, url, apiKey, groq, projDir, lang, tts, haptic, gender, lockTimeoutVal, savedSession, sessionLockingVal, hapticOnHangVal, hangTimeoutVal, fontSizeVal, terminalLinesVal, anchorVad, savedWwThreshold, savedWwTriggerWord] = await Promise.all([
         AsyncStorage.getItem(STORAGE_KEYS.servers),
         AsyncStorage.getItem(STORAGE_KEYS.currentServerId),
         AsyncStorage.getItem(STORAGE_KEYS.serverUrl),
@@ -593,8 +586,8 @@ export default function VoiceScreen() {
         AsyncStorage.getItem(STORAGE_KEYS.fontSize),
         AsyncStorage.getItem(STORAGE_KEYS.terminalLines),
         AsyncStorage.getItem(STORAGE_KEYS.anchorVadMode),
-        AsyncStorage.getItem(STORAGE_KEYS.wakeWord),
-        AsyncStorage.getItem(STORAGE_KEYS.endWord),
+        AsyncStorage.getItem(STORAGE_KEYS.wwThreshold),
+        AsyncStorage.getItem(STORAGE_KEYS.wwTriggerWord),
       ]);
       let serverList: ServerProfile[] = [];
       try { serverList = serversRaw ? JSON.parse(decrypt(serversRaw)) : []; } catch { serverList = []; }
@@ -636,8 +629,8 @@ export default function VoiceScreen() {
       if (fontSizeVal !== null)     { const v = parseInt(fontSizeVal) || 15; setFontSize(v); setFontSizeText(String(v)); }
       if (terminalLinesVal !== null) { const v = parseInt(terminalLinesVal) || 10; setTerminalLines(v); setTerminalLinesText(String(v)); }
       if (anchorVad === 'true') toggleAnchorVad(true);
-      if (savedWakeWord) { setWakeWord(savedWakeWord); wakeWordRef.current = savedWakeWord; }
-      if (savedEndWord)  { setEndWord(savedEndWord);   endWordRef.current  = savedEndWord; }
+      if (savedWwThreshold) { const v = parseFloat(savedWwThreshold); setWwThreshold(v); wwThresholdRef.current = v; }
+      if (savedWwTriggerWord) { setWwTriggerWord(savedWwTriggerWord); wwTriggerWordRef.current = savedWwTriggerWord; }
 
       const watchdog = await AsyncStorage.getItem(STORAGE_KEYS.watchdogEnabled);
       if (watchdog !== null) setWatchdogEnabled(watchdog === 'true');
@@ -861,17 +854,7 @@ export default function VoiceScreen() {
         setCurrentSession(name);
         AsyncStorage.setItem(STORAGE_KEYS.currentSession, encrypt(name)).catch(() => {});
         setSessionsOpen(false);
-        if (anchorVadActiveRef.current) {
-          anchorPhaseRef.current = 'accumulating';
-          anchorOpenFoundRef.current = false;
-          anchorJustSentRef.current = false;
-          anchorBufferRef.current = '';
-          anchorLastTranscript.current = '';
-          setAnchorTranscript('');
-          setStatus('listening');
-          ExpoSpeechRecognitionModule.abort();
-          setTimeout(() => startSttSession(), 300);
-        }
+        if (anchorVadActiveRef.current) setStatus('listening');
       } catch {}
     };
     if (!sessionLocking) {
@@ -1157,20 +1140,10 @@ export default function VoiceScreen() {
   const soundRef     = useRef<Audio.Sound | null>(null);
 
   // ── Anchor VAD refs ───────────────────────────────────────────────────────
-  const anchorVadActiveRef    = useRef(false);
-  const anchorPhaseRef        = useRef<'accumulating' | 'sending'>('accumulating');
-  const anchorOpenFoundRef    = useRef(false);      // true after open word found (start beep played)
-  const anchorJustSentRef     = useRef(false);      // true after send until next phrase boundary (blocks trailing results)
-  const anchorStartTimeRef    = useRef(0);
-  const anchorBufferRef       = useRef('');       // accumulated text after wake word
-  const anchorLastTranscript  = useRef('');       // last STT result in current session
-  const anchorSkipSessionRef  = useRef(false);    // skip end-of-session append on wake word session
-  const anchorProcessingRef   = useRef(false);    // true while sendAnchorText is running
-  const anchorLastStartRef    = useRef(0);         // timestamp of last startSttSession call
-  const anchorKeyboardOpenRef = useRef(false);     // true while keyboard is visible
+  const anchorVadActiveRef    = useRef(false);     // true while VAD mode is on
+  const anchorProcessingRef   = useRef(false);     // true while sendAnchorAudio is running
   const anchorSavedRingerRef  = useRef<number | null>(null); // ringer mode before VAD (null = wasn't changed)
   const anchorManualSendRef   = useRef(false);     // true while sendTextContent/sendRecording is running
-  const anchorTimeoutRef      = useRef<ReturnType<typeof setInterval> | null>(null);
 
 
   // ── Beep ───────────────────────────────────────────────────────────────────
@@ -1324,9 +1297,6 @@ export default function VoiceScreen() {
     } finally {
       anchorManualSendRef.current = false;
       setStatus(anchorVadActiveRef.current ? 'listening' : 'idle');
-      if (anchorVadActiveRef.current && !anchorKeyboardOpenRef.current) {
-        setTimeout(() => startSttSession(), 300);
-      }
     }
   }
 
@@ -1360,9 +1330,6 @@ export default function VoiceScreen() {
     } finally {
       anchorManualSendRef.current = false;
       setStatus(anchorVadActiveRef.current ? 'listening' : 'idle');
-      if (anchorVadActiveRef.current && !anchorKeyboardOpenRef.current) {
-        setTimeout(() => startSttSession(), 300);
-      }
     }
   }
 
@@ -1373,28 +1340,136 @@ export default function VoiceScreen() {
     await sendTextContent(text);
   }
 
-  // ── Anchor VAD ────────────────────────────────────────────────────────────
-  function startSttSession() {
-    if (!anchorVadActiveRef.current) return;
-    anchorLastStartRef.current = Date.now();
-    ExpoSpeechRecognitionModule.start({
-      lang: 'ru-RU',
-      interimResults: true,
-      continuous: true,
-      contextualStrings: anchorOpenFoundRef.current ? [endWordRef.current] : [wakeWordRef.current],
-    });
+  async function toggleAnchorVad(value: boolean) {
+    setAnchorVadMode(value);
+    AsyncStorage.setItem(STORAGE_KEYS.anchorVadMode, String(value)).catch(() => {});
+    if (value) {
+      const raw = await AsyncStorage.getItem(STORAGE_KEYS.wwReferences);
+      const refs: number[][] = raw ? JSON.parse(raw) : [];
+      if (refs.length === 0) {
+        Alert.alert('Нет образцов', `Сначала запиши "${wwTriggerWordRef.current || 'привет'}" в настройках → "Слово активации".`);
+        setAnchorVadMode(false);
+        AsyncStorage.setItem(STORAGE_KEYS.anchorVadMode, 'false').catch(() => {});
+        return;
+      }
+      anchorVadActiveRef.current = true;
+      wwPhaseRef.current = 'waiting';
+      wwCooldownUntilRef.current = 0;
+      setStatus('listening');
+      VolumeManager.getRingerMode().then((mode) => {
+        if (mode !== RINGER_MODE.silent && mode !== RINGER_MODE.vibrate) {
+          VolumeManager.getVolume({ type: 'system' }).then(({ volume }) => {
+            anchorSavedRingerRef.current = volume;
+            VolumeManager.setVolume(0, { type: 'system', showUI: false }).catch(() => {});
+          }).catch(() => {});
+        } else {
+          anchorSavedRingerRef.current = null; // already silent/vibrate, don't touch
+        }
+      }).catch(() => {});
+      try { startBluetoothSco(); } catch (e) {}
+      try {
+        await WakeWordDetector.startListening(refs, 200);
+      } catch (e: any) {
+        showError('Wake-word: ' + String(e?.message ?? e));
+        anchorVadActiveRef.current = false;
+        setAnchorVadMode(false);
+        return;
+      }
+    } else {
+      anchorVadActiveRef.current = false;
+      if (wwRecordingTimeoutRef.current) { clearTimeout(wwRecordingTimeoutRef.current); wwRecordingTimeoutRef.current = null; }
+      try { await WakeWordDetector.stopListening(); } catch (e) {}
+      if (wwPhaseRef.current === 'recording') {
+        try { await WakeWordDetector.stopRecordingCommand(); } catch (e) {}
+        wwPhaseRef.current = 'waiting';
+      }
+      if (anchorSavedRingerRef.current !== null) VolumeManager.setVolume(anchorSavedRingerRef.current, { type: 'system', showUI: false }).catch(() => {});
+      try { stopBluetoothSco(); } catch (e) {}
+      setStatus('idle');
+    }
   }
 
-  async function sendAnchorText(text: string) {
+  // ── Wake-word trigger (real flow: same word opens and closes) ──────────────
+  async function wwOnTrigger() {
+    if (wwPhaseRef.current === 'waiting') {
+      wwPhaseRef.current = 'recording';
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      playBeep();
+      setStatus('recording');
+      try {
+        await WakeWordDetector.startRecordingCommand();
+      } catch (e: any) {
+        showError('Wake-word rec: ' + String(e?.message ?? e));
+        wwPhaseRef.current = 'waiting';
+        return;
+      }
+      wwRecordingTimeoutRef.current = setTimeout(() => {
+        if (wwPhaseRef.current === 'recording') wwOnTrigger();
+      }, 5 * 60_000);
+    } else {
+      if (wwRecordingTimeoutRef.current) { clearTimeout(wwRecordingTimeoutRef.current); wwRecordingTimeoutRef.current = null; }
+      wwPhaseRef.current = 'waiting';
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      playBeep('end');
+      try {
+        const uri: string = await WakeWordDetector.stopRecordingCommand();
+        await sendAnchorAudio(uri);
+      } catch (e: any) {
+        showError('Wake-word stop: ' + String(e?.message ?? e));
+        setStatus(anchorVadActiveRef.current ? 'listening' : 'idle');
+      }
+    }
+  }
+
+  // Repeatedly strips the trigger word (and surrounding punctuation) from the very
+  // start/end of the transcript — the acoustic trigger word itself gets recorded as
+  // part of the command audio (it's what ends the recording), so Whisper transcribes
+  // it too; this removes it (and any repeats, if the user said it more than once).
+  function stripTriggerWord(text: string): string {
+    const word = wwTriggerWordRef.current.trim().toLowerCase();
+    if (!word) return text.trim();
+    let result = text.trim();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      // strip stray outer punctuation first, so a trailing "привет," is seen as "привет"
+      result = result.replace(/^[\s,.!?-]+/, '').replace(/[\s,.!?-]+$/, '');
+      const lower = result.toLowerCase();
+      if (lower.startsWith(word)) {
+        result = result.slice(word.length);
+        changed = true;
+        continue;
+      }
+      if (lower.endsWith(word)) {
+        result = result.slice(0, result.length - word.length);
+        changed = true;
+      }
+    }
+    return result.trim();
+  }
+
+  async function sendAnchorAudio(uri: string) {
     anchorProcessingRef.current = true;
     cancelledRef.current = false;
     setStatus('processing');
     try {
+      const formData = new FormData();
+      formData.append('audio', { uri, name: 'voice.wav', type: 'audio/wav' } as any);
+      const abort = new AbortController();
+      abortControllerRef.current = abort;
+      const sttRes = await fetch(`${serverUrl}/stt?language=${language}`, {
+        method: 'POST',
+        headers: apiHeaders(),
+        body: formData,
+        signal: abort.signal,
+      });
+      const { text: rawText } = await sttRes.json();
+      if (!rawText) return;
+      const text = stripTriggerWord(rawText);
+      if (!text) return;
       appendMessage({ role: 'user', text });
       lastScreenChangeRef.current = Date.now();
       askStartedRef.current = true;
-      const abort = new AbortController();
-      abortControllerRef.current = abort;
       const askRes = await fetch(`${serverUrl}/ask?session=${encodeURIComponent(currentSession)}&lock=${sessionLocking}`, {
         method: 'POST',
         headers: apiHeaders({ 'Content-Type': 'application/json' }),
@@ -1412,133 +1487,68 @@ export default function VoiceScreen() {
       if (e?.name !== 'AbortError') showError('Error: ' + e);
     } finally {
       anchorProcessingRef.current = false;
-      if (anchorVadActiveRef.current) {
-        anchorBufferRef.current = '';
-        anchorLastTranscript.current = '';
-        anchorOpenFoundRef.current = false;
-        anchorJustSentRef.current = false;
-        anchorPhaseRef.current = 'accumulating';
-        setAnchorTranscript('');
-        setStatus('listening');
-        if (!anchorKeyboardOpenRef.current) setTimeout(() => startSttSession(), 300);
-      } else {
-        setStatus('idle');
-      }
+      setStatus(anchorVadActiveRef.current ? 'listening' : 'idle');
     }
   }
 
-  async function toggleAnchorVad(value: boolean) {
-    setAnchorVadMode(value);
-    AsyncStorage.setItem(STORAGE_KEYS.anchorVadMode, String(value)).catch(() => {});
-    if (value) {
-      await ExpoSpeechRecognitionModule.requestPermissionsAsync();
-      anchorVadActiveRef.current = true;
-      anchorPhaseRef.current = 'accumulating';
-      anchorOpenFoundRef.current = false;
-      anchorJustSentRef.current = false;
-      anchorBufferRef.current = '';
-      anchorLastTranscript.current = '';
-      setStatus('listening');
-      VolumeManager.getRingerMode().then((mode) => {
-        if (mode !== RINGER_MODE.silent && mode !== RINGER_MODE.vibrate) {
-          VolumeManager.getVolume({ type: 'system' }).then(({ volume }) => {
-            anchorSavedRingerRef.current = volume;
-            VolumeManager.setVolume(0, { type: 'system', showUI: false }).catch(() => {});
-          }).catch(() => {});
-        } else {
-          anchorSavedRingerRef.current = null; // already silent/vibrate, don't touch
-        }
-      }).catch(() => {});
-      try { startBluetoothSco(); } catch (e) {}
-      startSttSession();
-    } else {
-      anchorVadActiveRef.current = false;
-      if (anchorTimeoutRef.current) { clearInterval(anchorTimeoutRef.current); anchorTimeoutRef.current = null; }
-      ExpoSpeechRecognitionModule.abort();
-      if (anchorSavedRingerRef.current !== null) VolumeManager.setVolume(anchorSavedRingerRef.current, { type: 'system', showUI: false }).catch(() => {});
-      try { stopBluetoothSco(); } catch (e) {}
-      setStatus('idle');
+  // ── Wake-word local-detector test screen ────────────────────────────────────
+  async function wwRecordNext() {
+    setWwRecording(true);
+    try {
+      const emb = await WakeWordDetector.recordSample(1800);
+      const next = [...wwSamples, emb];
+      setWwSamples(next);
+      AsyncStorage.setItem(STORAGE_KEYS.wwReferences, JSON.stringify(next)).catch(() => {});
+      setWwLog(prev => [`Образец ${next.length} записан`, ...prev]);
+    } catch (e: any) {
+      Alert.alert('Ошибка записи', String(e?.message ?? e));
+    } finally {
+      setWwRecording(false);
     }
   }
 
-  useSpeechRecognitionEvent('result', (event) => {
-    if (!anchorVadActiveRef.current) return;
-    if (anchorKeyboardOpenRef.current) return;
-    const transcript = (event.results[0]?.transcript ?? '').toLowerCase();
-    if (!transcript) return;
-    if (anchorPhaseRef.current !== 'accumulating') return;
-    const prev = anchorLastTranscript.current;
-    anchorLastTranscript.current = transcript;
-    // utterance boundary — commit prev to buffer first
-    if (prev && !transcript.startsWith(prev.slice(0, Math.min(prev.length, 20)))) {
-      if (anchorJustSentRef.current) {
-        anchorJustSentRef.current = false;
-      } else {
-        anchorBufferRef.current += (anchorBufferRef.current ? ' ' : '') + prev;
-      }
+  function wwResetSamples() {
+    setWwSamples([]);
+    setWwLog([]);
+    AsyncStorage.removeItem(STORAGE_KEYS.wwReferences).catch(() => {});
+  }
+
+  async function wwToggleListening() {
+    if (wwListening) {
+      try { await WakeWordDetector.stopListening(); } catch (e) {}
+      setWwListening(false);
+      setWwScore(null);
+      return;
     }
-    const fullText = (anchorBufferRef.current + ' ' + transcript).trim();
-    // open: search in fullText, blocked while justSent flag is set
-    if (!anchorOpenFoundRef.current && !anchorJustSentRef.current) {
-      if (fullText.indexOf(wakeWordRef.current) >= 0) {
-        anchorOpenFoundRef.current = true;
-        anchorStartTimeRef.current = Date.now();
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        playBeep();
-        setStatus('recording');
-      }
+    try {
+      await WakeWordDetector.startListening(wwSamples, 200);
+      setWwListening(true);
+    } catch (e: any) {
+      Alert.alert('Ошибка прослушки', String(e?.message ?? e));
     }
-    // close: search in fullText on every result
-    if (anchorOpenFoundRef.current) {
-      if (Date.now() - anchorStartTimeRef.current > 5 * 60_000) {
-        anchorBufferRef.current = '';
-        anchorLastTranscript.current = '';
-        anchorOpenFoundRef.current = false;
-        anchorJustSentRef.current = true;
-        anchorPhaseRef.current = 'sending';
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        ExpoSpeechRecognitionModule.stop();
-        playBeep('end');
-        sendAnchorText(fullText);
-        return;
-      }
-      const openIdx = fullText.indexOf(wakeWordRef.current);
-      const closeIdx = openIdx >= 0 ? fullText.indexOf(endWordRef.current, openIdx + wakeWordRef.current.length) : -1;
-      if (closeIdx >= 0) {
-        const text = fullText.slice(openIdx + wakeWordRef.current.length, closeIdx).trim();
-        anchorBufferRef.current = '';
-        anchorLastTranscript.current = '';
-        anchorOpenFoundRef.current = false;
-        anchorJustSentRef.current = true;
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        playBeep('end');
-        if (text) {
-          anchorPhaseRef.current = 'sending';
-          ExpoSpeechRecognitionModule.stop();
-          sendAnchorText(text);
-        } else {
-          setStatus('listening');
-          ExpoSpeechRecognitionModule.stop();
+  }
+
+  const wwOnTriggerRef = useRef(() => {});
+  useEffect(() => { wwOnTriggerRef.current = wwOnTrigger; });
+
+  useEffect(() => {
+    const sub = WakeWordDetector.addScoreListener(({ score }) => {
+      setWwScore(score);
+      if (score >= wwThresholdRef.current) {
+        setWwLog(prev => [`Сработало! score=${score.toFixed(3)}`, ...prev].slice(0, 20));
+        if (anchorVadActiveRef.current && Date.now() >= wwCooldownUntilRef.current) {
+          wwCooldownUntilRef.current = Date.now() + 1200;
+          wwOnTriggerRef.current();
         }
-        return;
       }
-    }
-  });
+    });
+    return () => sub.remove();
+  }, []);
 
-  useSpeechRecognitionEvent('end', () => {
-    if (!anchorVadActiveRef.current) return;
-    if (anchorPhaseRef.current === 'sending') return;
-    if (anchorProcessingRef.current) return;
-    if (anchorKeyboardOpenRef.current) return;
-    if (anchorManualSendRef.current) return;
-    setTimeout(() => startSttSession(), 200);
-  });
-
-  useSpeechRecognitionEvent('error', (event) => {
-    if (!anchorVadActiveRef.current) return;
-    if (event.error === 'aborted' || event.error === 'no-speech' || event.error === 'client') return;
-    showError(`VAD: ${event.error}`);
-  });
+  function wwClose() {
+    if (wwListening) { WakeWordDetector.stopListening().catch(() => {}); setWwListening(false); }
+    setWwTestOpen(false);
+  }
 
   // ── Manual recording ───────────────────────────────────────────────────────
   async function startRecording() {
@@ -1575,8 +1585,8 @@ export default function VoiceScreen() {
 
   const buttonLabel = anchorVadMode ? {
     idle:       '⏸ VAD paused',
-    listening:  `👂 Say "${wakeWord}"...`,
-    recording:  `Say "${endWord}" to send`,
+    listening:  `👂 Say "${wwTriggerWord}"...`,
+    recording:  `Say "${wwTriggerWord}" to send`,
     processing: '⏳ Processing...',
     speaking:   '🔊 Speaking...',
   }[status] : {
@@ -1775,26 +1785,14 @@ export default function VoiceScreen() {
                 <Text style={styles.settingLabel}>VAD</Text>
                 <Switch value={anchorVadMode} onValueChange={toggleAnchorVad} thumbColor={anchorVadMode ? '#4AE27A' : '#888'} />
               </View>
-              <Text style={styles.inputLabel}>Wake phrase</Text>
-              <TextInput
-                style={styles.input}
-                value={wakeWord}
-                onChangeText={v => { setWakeWord(v); wakeWordRef.current = v.toLowerCase().trim(); }}
-                onEndEditing={() => AsyncStorage.setItem(STORAGE_KEYS.wakeWord, wakeWord.toLowerCase().trim()).catch(() => {})}
-                placeholder={DEFAULT_WAKE_WORD}
-                placeholderTextColor="#555"
-                autoCapitalize="none"
-              />
-              <Text style={styles.inputLabel}>End phrase</Text>
-              <TextInput
-                style={styles.input}
-                value={endWord}
-                onChangeText={v => { setEndWord(v); endWordRef.current = v.toLowerCase().trim(); }}
-                onEndEditing={() => AsyncStorage.setItem(STORAGE_KEYS.endWord, endWord.toLowerCase().trim()).catch(() => {})}
-                placeholder={DEFAULT_END_WORD}
-                placeholderTextColor="#555"
-                autoCapitalize="none"
-              />
+              <TouchableOpacity style={styles.settingRow} onPress={async () => {
+                const raw = await AsyncStorage.getItem(STORAGE_KEYS.wwReferences);
+                if (raw) { try { setWwSamples(JSON.parse(raw)); } catch {} }
+                setWwTestOpen(true);
+              }}>
+                <Text style={styles.settingLabel}>Слово активации</Text>
+                <Text style={styles.settingLabel}>▶</Text>
+              </TouchableOpacity>
               <TouchableOpacity style={styles.settingRow} onPress={() => setHapticOpen(v => !v)}>
                 <Text style={styles.settingLabel}>Haptic feedback</Text>
                 <Text style={styles.settingLabel}>{HAPTIC_OPTIONS.find(o => o.value === hapticStyle)?.label} {hapticOpen ? '▲' : '▼'}</Text>
@@ -2043,6 +2041,66 @@ export default function VoiceScreen() {
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Wake-word local-detector test modal */}
+      <Modal visible={wwTestOpen} transparent animationType="slide" onRequestClose={wwClose}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalSheet, { padding: 24 }]}>
+            <Text style={styles.modalTitle}>Слово активации</Text>
+            <Text style={styles.inputLabel}>Слово (для вырезания из текста команды)</Text>
+            <TextInput
+              style={styles.input}
+              value={wwTriggerWord}
+              onChangeText={v => { setWwTriggerWord(v); wwTriggerWordRef.current = v.toLowerCase().trim(); }}
+              onEndEditing={() => AsyncStorage.setItem(STORAGE_KEYS.wwTriggerWord, wwTriggerWord.toLowerCase().trim()).catch(() => {})}
+              placeholder="привет"
+              placeholderTextColor="#555"
+              autoCapitalize="none"
+            />
+            <Text style={styles.settingLabel}>Образцов записано: {wwSamples.length}/{WW_SAMPLE_COUNT}</Text>
+            <TouchableOpacity
+              style={[styles.pinBtn, (wwRecording || wwListening) && { opacity: 0.4 }]}
+              onPress={wwRecordNext}
+              disabled={wwRecording || wwListening}
+            >
+              <Text style={styles.pinBtnText}>{wwRecording ? 'Запись...' : `Записать "${wwTriggerWord || 'привет'}" (1.8с)`}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.modalClose, { marginTop: 8 }]} onPress={wwResetSamples} disabled={wwListening}>
+              <Text style={styles.modalCloseText}>Сбросить образцы</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.pinBtn, { marginTop: 16 }, wwSamples.length === 0 && { opacity: 0.4 }]}
+              onPress={wwToggleListening}
+              disabled={wwSamples.length === 0}
+            >
+              <Text style={styles.pinBtnText}>{wwListening ? 'Остановить прослушку' : 'Начать прослушку'}</Text>
+            </TouchableOpacity>
+            {wwListening && (
+              <Text style={[styles.settingLabel, { marginTop: 8, fontSize: 20, textAlign: 'center' }]}>
+                score: {wwScore !== null ? wwScore.toFixed(3) : '—'} {wwScore !== null && wwScore >= wwThreshold ? '✅' : ''}
+              </Text>
+            )}
+            <Text style={styles.settingLabel}>Порог: {wwThreshold.toFixed(2)}</Text>
+            <Slider
+              style={{ width: '100%', height: 36 }}
+              minimumValue={0.3}
+              maximumValue={0.95}
+              step={0.01}
+              value={wwThreshold}
+              onValueChange={(v: number) => { setWwThreshold(v); wwThresholdRef.current = v; }}
+              onSlidingComplete={(v: number) => AsyncStorage.setItem(STORAGE_KEYS.wwThreshold, String(v)).catch(() => {})}
+              minimumTrackTintColor="#4AE27A"
+              maximumTrackTintColor="#555"
+            />
+            <ScrollView style={{ maxHeight: 150, marginTop: 12 }}>
+              {wwLog.map((l, i) => <Text key={i} style={styles.settingLabel}>{l}</Text>)}
+            </ScrollView>
+            <TouchableOpacity style={[styles.modalClose, { marginTop: 16 }]} onPress={wwClose}>
+              <Text style={styles.modalCloseText}>Закрыть</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
 
       {/* Sessions Modal */}
@@ -2397,15 +2455,11 @@ export default function VoiceScreen() {
                   </View>
                   {status === 'recording' && (
                     <TouchableOpacity
-                      onPress={() => {
-                        anchorOpenFoundRef.current = false;
-                        anchorBufferRef.current = '';
-                        anchorLastTranscript.current = '';
-                        anchorJustSentRef.current = false;
-                        setAnchorTranscript('');
+                      onPress={async () => {
+                        if (wwRecordingTimeoutRef.current) { clearTimeout(wwRecordingTimeoutRef.current); wwRecordingTimeoutRef.current = null; }
+                        wwPhaseRef.current = 'waiting';
+                        try { await WakeWordDetector.stopRecordingCommand(); } catch (e) {}
                         setStatus('listening');
-                        ExpoSpeechRecognitionModule.abort();
-                        setTimeout(() => startSttSession(), 300);
                       }}
                       style={{ backgroundColor: '#8B3A3A', borderRadius: 999, width: 52, height: 52, marginLeft: 8, justifyContent: 'center', alignItems: 'center' }}
                     >
