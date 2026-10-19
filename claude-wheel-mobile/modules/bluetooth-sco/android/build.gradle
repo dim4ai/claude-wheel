@@ -2,6 +2,14 @@ apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 apply plugin: 'expo-module-gradle-plugin'
 
+expoModule {
+  canBePublished false
+}
+
+def safeExtGet(prop, fallback) {
+  rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+}
+
 android {
   namespace "expo.modules.bluetoothsco"
   compileSdkVersion safeExtGet("compileSdkVersion", 34)
@@ -14,5 +22,5 @@ android {
 
 dependencies {
   implementation project(':expo-modules-core')
-  implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:${kotlinVersion()}"
+  implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:${kotlinVersion}"
 }

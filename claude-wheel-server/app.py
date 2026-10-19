@@ -241,15 +241,17 @@ EDGE_TTS_VOICES = {
     'ja': {'female': 'ja-JP-NanamiNeural',    'male': 'ja-JP-KeitaNeural'},
 }
 
-_TTS_CONCURRENCY = asyncio.Semaphore(4)
+_TTS_CONCURRENCY = asyncio.Semaphore(2)
 
-async def _tts_chunk(text: str, voice: str, retries: int = 5) -> bytes:
-    """edge-tts talks to an unofficial Microsoft endpoint that rejects a large
-    fraction of connections outright (WSServerHandshakeError 403), independent
-    of our own concurrency — observed ~40-50% per-attempt failure rate during
-    Microsoft-side throttling. Cap concurrency and retry with jittered backoff;
-    jitter matters because simultaneous chunks that fail together would
-    otherwise retry in lockstep and hit the same throttling window again."""
+async def _tts_chunk(text: str, voice: str, retries: int = 0) -> bytes:
+    """edge-tts talks to an unofficial Microsoft endpoint. As of 2026-10-14 our
+    IP is fully blocked (100% 403, even single sequential requests) — likely
+    because our own concurrency+retry pattern (parallel WS handshakes,
+    retries firing in bursts) looked like scraping/abuse rather than normal
+    use. Retries are pointless against a full block and only add to that
+    footprint, so they're off (retries=0) and concurrency is capped low,
+    hoping the IP gets unblocked over the next few days. Revisit once/if
+    requests succeed again."""
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
         try:

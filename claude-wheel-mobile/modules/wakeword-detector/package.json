@@ -1,0 +1,9 @@
+{
+  "name": "wakeword-detector",
+  "version": "1.0.0",
+  "description": "Local on-device wake-word detection via audio embedding similarity (ONNX)",
+  "main": "index.ts",
+  "android": {
+    "gradlePath": "android/build.gradle"
+  }
+}
