@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .env
 sessions-list.txt
+ssh-connections.json

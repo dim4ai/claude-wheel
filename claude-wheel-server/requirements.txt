@@ -5,3 +5,5 @@ groq
 python-dotenv
 transliterate
 edge-tts
+cryptography
+httpx

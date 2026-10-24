@@ -13,12 +13,16 @@ import json
 import os
 import random
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 
 import edge_tts
+import httpx
+from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Query, Request, UploadFile, HTTPException, Header, Depends, Body
 from fastapi.responses import StreamingResponse
@@ -68,6 +72,35 @@ STT_LANGUAGE   = os.environ.get("STT_LANGUAGE", "ru")  # set to empty string for
 ASK_TIMEOUT    = int(os.environ.get("ASK_TIMEOUT", "600"))
 IDLE_TIMEOUT   = int(os.environ.get("IDLE_TIMEOUT", "1800"))  # 30 min default
 SESSIONS_CONF  = os.path.join(os.path.dirname(__file__), os.environ.get("SESSIONS_LIST", "sessions-list.txt"))
+SSH_CREDS_FILE = os.path.join(os.path.dirname(__file__), "ssh-connections.json")
+
+def _get_ssh_creds_key() -> bytes:
+    """Fernet key for encrypting saved SSH passwords at rest. Generated once and
+    persisted to .env so it survives restarts; losing it just means re-entering
+    the saved SSH passwords, nothing else depends on it."""
+    key = os.environ.get("SSH_CREDS_KEY", "").strip()
+    if key:
+        return key.encode()
+    new_key = Fernet.generate_key().decode()
+    with open(os.path.join(os.path.dirname(__file__), ".env"), "a") as f:
+        f.write(f"\nSSH_CREDS_KEY={new_key}\n")
+    os.environ["SSH_CREDS_KEY"] = new_key
+    return new_key.encode()
+
+_ssh_fernet = Fernet(_get_ssh_creds_key())
+
+def load_ssh_connections() -> list[dict]:
+    if not os.path.exists(SSH_CREDS_FILE):
+        return []
+    with open(SSH_CREDS_FILE) as f:
+        return json.load(f)
+
+def save_ssh_connections(conns: list[dict]):
+    with open(SSH_CREDS_FILE, "w") as f:
+        json.dump(conns, f, indent=2)
+
+def _ssh_public(c: dict) -> dict:
+    return {"id": c["id"], "name": c["name"], "host": c["host"], "user": c["user"]}
 
 def tmux_target(session: str) -> str:
     """Exact-match tmux target. Without '=', tmux -t falls back to prefix matching,
@@ -243,19 +276,36 @@ EDGE_TTS_VOICES = {
 
 _TTS_CONCURRENCY = asyncio.Semaphore(2)
 
+TTS_PROXY_URL = os.environ.get("TTS_PROXY_URL", "").rstrip("/")
+TTS_PROXY_KEY = os.environ.get("TTS_PROXY_KEY", "")
+
+async def _tts_via_proxy(text: str, voice: str) -> bytes:
+    """Routes the edge-tts call through claude-wheel-tts-proxy on a separate VPS
+    whose IP isn't blocked by Microsoft. See TTS_PROXY_URL/TTS_PROXY_KEY in .env."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            f"{TTS_PROXY_URL}/tts",
+            headers={"X-Api-Key": TTS_PROXY_KEY},
+            json={"text": text, "voice": voice},
+        )
+        r.raise_for_status()
+        return r.content
+
 async def _tts_chunk(text: str, voice: str, retries: int = 0) -> bytes:
     """edge-tts talks to an unofficial Microsoft endpoint. As of 2026-10-14 our
     IP is fully blocked (100% 403, even single sequential requests) — likely
     because our own concurrency+retry pattern (parallel WS handshakes,
     retries firing in bursts) looked like scraping/abuse rather than normal
     use. Retries are pointless against a full block and only add to that
-    footprint, so they're off (retries=0) and concurrency is capped low,
-    hoping the IP gets unblocked over the next few days. Revisit once/if
-    requests succeed again."""
+    footprint, so they're off (retries=0) and concurrency is capped low.
+    Set TTS_PROXY_URL to route around the block via claude-wheel-tts-proxy
+    on a separate VPS instead."""
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
         try:
             async with _TTS_CONCURRENCY:
+                if TTS_PROXY_URL:
+                    return await _tts_via_proxy(text, voice)
                 communicate = edge_tts.Communicate(text, voice)
                 buf = io.BytesIO()
                 async for chunk in communicate.stream():
@@ -949,6 +999,88 @@ def shell_delete(session: str = Query(...), _=Depends(verify_key)):
     if result.returncode != 0:
         raise HTTPException(status_code=404, detail=f"Session not found or already closed: {result.stderr.strip()}")
     return {"ok": True, "name": session}
+
+
+# ── Saved SSH connections ────────────────────────────────────────────────────
+# Credentials live only on this server (encrypted at rest), never on the phone.
+# Connecting reuses the shell-session machinery above: it's a tmux session like
+# any other, just one that auto-runs `ssh` on creation.
+
+@app.get("/ssh-connections")
+def list_ssh_connections(_=Depends(verify_key)):
+    return {"connections": [_ssh_public(c) for c in load_ssh_connections()]}
+
+
+@app.post("/ssh-connections")
+def create_ssh_connection(body: dict = Body(...), _=Depends(verify_key)):
+    name = body.get("name", "").strip()
+    host = body.get("host", "").strip()
+    user = body.get("user", "").strip()
+    password = body.get("password", "")
+    if not name or not host or not user:
+        raise HTTPException(status_code=400, detail="name, host and user are required")
+    entry = {
+        "id": uuid.uuid4().hex,
+        "name": name,
+        "host": host,
+        "user": user,
+        "password_enc": _ssh_fernet.encrypt(password.encode()).decode(),
+    }
+    conns = load_ssh_connections()
+    conns.append(entry)
+    save_ssh_connections(conns)
+    return {"ok": True, "connection": _ssh_public(entry)}
+
+
+@app.put("/ssh-connections")
+def update_ssh_connection(id: str = Query(...), body: dict = Body(...), _=Depends(verify_key)):
+    conns = load_ssh_connections()
+    entry = next((c for c in conns if c["id"] == id), None)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    for field in ("name", "host", "user"):
+        value = body.get(field, "").strip()
+        if value:
+            entry[field] = value
+    password = body.get("password", "")
+    if password:
+        entry["password_enc"] = _ssh_fernet.encrypt(password.encode()).decode()
+    save_ssh_connections(conns)
+    return {"ok": True, "connection": _ssh_public(entry)}
+
+
+@app.delete("/ssh-connections")
+def delete_ssh_connection(id: str = Query(...), _=Depends(verify_key)):
+    conns = load_ssh_connections()
+    remaining = [c for c in conns if c["id"] != id]
+    if len(remaining) == len(conns):
+        raise HTTPException(status_code=404, detail="Connection not found")
+    save_ssh_connections(remaining)
+    return {"ok": True}
+
+
+@app.post("/ssh-connect")
+def ssh_connect(id: str = Query(...), _=Depends(verify_key)):
+    """Opens (or reattaches to) a tmux session that SSHes into a saved connection.
+    The password is passed via a session-local env var, never typed into the pane,
+    so it never appears in the terminal's visible output or history."""
+    entry = next((c for c in load_ssh_connections() if c["id"] == id), None)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    session_name = "ssh-" + re.sub(r"[^a-z0-9_-]+", "-", entry["name"].strip().lower()).strip("-")
+    if not is_running(session_name):
+        password = _ssh_fernet.decrypt(entry["password_enc"].encode()).decode()
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", session_name, "-c", os.path.expanduser("~"),
+             "-e", f"SSHPASS={password}"],
+            capture_output=True, text=True,
+        )
+        ssh_cmd = (
+            "sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 "
+            f"{shlex.quote(entry['user'])}@{shlex.quote(entry['host'])}"
+        )
+        subprocess.run(["tmux", "send-keys", "-t", tmux_target(session_name), ssh_cmd, "Enter"], capture_output=True)
+    return {"ok": True, "session": session_name}
 
 
 # ── Auto-close idle sessions ────────────────────────────────────────────────

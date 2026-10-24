@@ -303,6 +303,16 @@ export default function VoiceScreen() {
   const [newShellSessionExpanded, setNewShellSessionExpanded] = useState(false);
   const [newShellSessionName, setNewShellSessionName] = useState('');
   const [creatingShellSession, setCreatingShellSession] = useState(false);
+  const [sshConnectionsExpanded, setSshConnectionsExpanded] = useState(false);
+  const [sshConnections, setSshConnections] = useState<{id: string; name: string; host: string; user: string}[]>([]);
+  const [connectingSshId, setConnectingSshId] = useState<string | null>(null);
+  const [newSshExpanded, setNewSshExpanded] = useState(false);
+  const [sshEditId, setSshEditId] = useState<string | null>(null);
+  const [sshFormName, setSshFormName] = useState('');
+  const [sshFormHost, setSshFormHost] = useState('');
+  const [sshFormUser, setSshFormUser] = useState('');
+  const [sshFormPassword, setSshFormPassword] = useState('');
+  const [savingSsh, setSavingSsh] = useState(false);
   const [openShellSessions, setOpenShellSessions] = useState<string[]>([]);
   const [shellScreens, setShellScreens] = useState<{[name: string]: string}>({});
   const [shellCursors, setShellCursors] = useState<{[name: string]: {x: number, y: number, paneHeight: number, totalLines: number} | null}>({});
@@ -842,6 +852,107 @@ export default function VoiceScreen() {
       const data = await r.json();
       if (data.sessions) setShellSessionsList(data.sessions.map((name: string) => ({ name, running: true })));
     } catch {}
+    try {
+      const r = await fetch(`${serverUrl}/ssh-connections`, { headers: apiHeaders() });
+      const data = await r.json();
+      if (data.connections) setSshConnections(data.connections);
+    } catch {}
+  }
+
+  function openShellLikeSession(name: string) {
+    setOpenShellSessions(prev => (prev.includes(name) ? prev : [...prev, name]));
+    setSessionsOpen(false);
+    setTimeout(() => {
+      const idx = openShellSessions.includes(name)
+        ? openShellSessions.indexOf(name) + 1
+        : openShellSessions.length + 1;
+      pagerRef.current?.scrollTo({ x: screenWidth * idx, animated: true });
+      setCurrentPageIndex(idx);
+    }, 100);
+  }
+
+  async function connectSsh(conn: {id: string; name: string}) {
+    setConnectingSshId(conn.id);
+    try {
+      const r = await fetch(`${serverUrl}/ssh-connect?id=${encodeURIComponent(conn.id)}`, {
+        method: 'POST', headers: apiHeaders(),
+      });
+      if (!r.ok) throw new Error(`Server error: ${r.status}`);
+      const data = await r.json();
+      openShellLikeSession(data.session);
+      await loadSessions();
+    } catch (e: any) {
+      Alert.alert('Connection error', String(e?.message ?? e));
+    } finally {
+      setConnectingSshId(null);
+    }
+  }
+
+  function startEditSsh(conn: {id: string; name: string; host: string; user: string}) {
+    setSshEditId(conn.id);
+    setSshFormName(conn.name);
+    setSshFormHost(conn.host);
+    setSshFormUser(conn.user);
+    setSshFormPassword('');
+    setNewSshExpanded(true);
+  }
+
+  function resetSshForm() {
+    setSshEditId(null);
+    setSshFormName('');
+    setSshFormHost('');
+    setSshFormUser('');
+    setSshFormPassword('');
+    setNewSshExpanded(false);
+  }
+
+  async function saveSshConnection() {
+    const name = sshFormName.trim();
+    const host = sshFormHost.trim();
+    const user = sshFormUser.trim();
+    if (!name || !host || !user) return;
+    if (!sshEditId && !sshFormPassword) return;
+    setSavingSsh(true);
+    try {
+      if (sshEditId) {
+        await fetch(`${serverUrl}/ssh-connections?id=${encodeURIComponent(sshEditId)}`, {
+          method: 'PUT',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ name, host, user, password: sshFormPassword }),
+        });
+      } else {
+        await fetch(`${serverUrl}/ssh-connections`, {
+          method: 'POST',
+          headers: apiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ name, host, user, password: sshFormPassword }),
+        });
+      }
+      resetSshForm();
+      await loadSessions();
+    } catch (e: any) {
+      Alert.alert('Error', String(e?.message ?? e));
+    } finally {
+      setSavingSsh(false);
+    }
+  }
+
+  function deleteSshConnection(conn: {id: string; name: string}) {
+    Alert.alert(
+      'Delete SSH connection',
+      `Delete "${conn.name}"? The saved password will be removed from the server.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: async () => {
+          try {
+            await fetch(`${serverUrl}/ssh-connections?id=${encodeURIComponent(conn.id)}`, {
+              method: 'DELETE', headers: apiHeaders(),
+            });
+          } catch {}
+          setSshConnections(prev => prev.filter(c => c.id !== conn.id));
+          if (sshEditId === conn.id) resetSshForm();
+        }},
+      ]
+    );
   }
 
   async function switchSession(name: string) {
@@ -2190,20 +2301,7 @@ export default function VoiceScreen() {
                 ? <Text style={[styles.sessionDir, { paddingHorizontal: 16, paddingVertical: 8 }]}>No shell sessions</Text>
                 : shellSessionsList.map(s => (
                   <View key={s.name} style={styles.shellSessionRow}>
-                    <TouchableOpacity style={{ flex: 1 }} onPress={() => {
-                      setOpenShellSessions(prev => {
-                        if (prev.includes(s.name)) return prev;
-                        return [...prev, s.name];
-                      });
-                      setSessionsOpen(false);
-                      setTimeout(() => {
-                        const idx = openShellSessions.includes(s.name)
-                          ? openShellSessions.indexOf(s.name) + 1
-                          : openShellSessions.length + 1;
-                        pagerRef.current?.scrollTo({ x: screenWidth * idx, animated: true });
-                        setCurrentPageIndex(idx);
-                      }, 100);
-                    }}>
+                    <TouchableOpacity style={{ flex: 1 }} onPress={() => openShellLikeSession(s.name)}>
                       <Text style={styles.sessionName}>🟢 {s.name}</Text>
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => killShellSession(s.name)} style={styles.sessionCloseBtn}>
@@ -2245,6 +2343,79 @@ export default function VoiceScreen() {
                 {creatingShellSession
                   ? <ActivityIndicator color="#fff" />
                   : <Text style={styles.modalCloseText}>+ Create</Text>
+                }
+              </TouchableOpacity>
+            </>}
+
+            <TouchableOpacity style={styles.sectionHeader} onPress={() => setSshConnectionsExpanded(v => !v)}>
+              <Text style={styles.sectionHeaderText}>SSH connections {sshConnectionsExpanded ? '▲' : '▼'}</Text>
+            </TouchableOpacity>
+            {sshConnectionsExpanded && (
+              sshConnections.length === 0
+                ? <Text style={[styles.sessionDir, { paddingHorizontal: 16, paddingVertical: 8 }]}>No saved SSH connections</Text>
+                : sshConnections.map(c => (
+                  <View key={c.id} style={styles.shellSessionRow}>
+                    <TouchableOpacity
+                      style={{ flex: 1 }}
+                      onPress={() => connectSsh(c)}
+                      onLongPress={() => startEditSsh(c)}
+                      disabled={connectingSshId === c.id}
+                    >
+                      <Text style={styles.sessionName}>{c.name}</Text>
+                      <Text style={styles.sessionDir}>{c.user}@{c.host}</Text>
+                    </TouchableOpacity>
+                    {connectingSshId === c.id
+                      ? <ActivityIndicator color="#fff" style={{ marginHorizontal: 12 }} />
+                      : <TouchableOpacity onPress={() => deleteSshConnection(c)} style={styles.sessionCloseBtn}>
+                          <Text style={styles.sessionCloseText}>✕</Text>
+                        </TouchableOpacity>
+                    }
+                  </View>
+                ))
+            )}
+
+            <TouchableOpacity style={styles.sectionHeader} onPress={() => (newSshExpanded ? resetSshForm() : setNewSshExpanded(true))}>
+              <Text style={styles.sectionHeaderText}>{sshEditId ? 'Edit SSH connection' : 'New SSH connection'} {newSshExpanded ? '▲' : '▼'}</Text>
+            </TouchableOpacity>
+            {newSshExpanded && <>
+              <TextInput
+                style={styles.input}
+                value={sshFormName}
+                onChangeText={setSshFormName}
+                placeholder="Name"
+                placeholderTextColor="#555"
+                autoCapitalize="none"
+              />
+              <TextInput
+                style={styles.input}
+                value={sshFormHost}
+                onChangeText={setSshFormHost}
+                placeholder="Host / IP"
+                placeholderTextColor="#555"
+                autoCapitalize="none"
+                keyboardType="url"
+              />
+              <TextInput
+                style={styles.input}
+                value={sshFormUser}
+                onChangeText={setSshFormUser}
+                placeholder="User"
+                placeholderTextColor="#555"
+                autoCapitalize="none"
+              />
+              <TextInput
+                style={styles.input}
+                value={sshFormPassword}
+                onChangeText={setSshFormPassword}
+                placeholder={sshEditId ? 'Password (leave blank to keep current)' : 'Password'}
+                placeholderTextColor="#555"
+                autoCapitalize="none"
+                secureTextEntry
+              />
+              <TouchableOpacity style={styles.modalClose} onPress={saveSshConnection} disabled={savingSsh}>
+                {savingSsh
+                  ? <ActivityIndicator color="#fff" />
+                  : <Text style={styles.modalCloseText}>{sshEditId ? 'Save' : '+ Create'}</Text>
                 }
               </TouchableOpacity>
             </>}
