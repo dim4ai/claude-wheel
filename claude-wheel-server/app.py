@@ -89,6 +89,74 @@ def _get_ssh_creds_key() -> bytes:
 
 _ssh_fernet = Fernet(_get_ssh_creds_key())
 
+SSH_KEY_PATH = os.path.expanduser("~/.ssh/claude_wheel_id_ed25519")
+SSH_PUBKEY_PATH = SSH_KEY_PATH + ".pub"
+
+def _ensure_ssh_keypair():
+    """Generates our one shared identity key (no passphrase — it's used
+    non-interactively) the first time it's needed. Saved connections carry no
+    password at all after this; the key is installed on each target once."""
+    if os.path.exists(SSH_KEY_PATH):
+        return
+    os.makedirs(os.path.dirname(SSH_KEY_PATH), exist_ok=True)
+    subprocess.run(
+        ["ssh-keygen", "-t", "ed25519", "-N", "", "-f", SSH_KEY_PATH, "-C", "claude-wheel"],
+        capture_output=True, text=True, check=True,
+    )
+
+_ensure_ssh_keypair()
+with open(SSH_PUBKEY_PATH) as f:
+    SSH_PUBKEY = f.read().strip()
+
+def _ssh_check(cmd: list[str], env: dict | None = None, timeout: int = 12) -> dict:
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Connection timed out"}
+    if result.returncode == 0:
+        return {"ok": True}
+    return {"ok": False, "error": (result.stderr or result.stdout).strip()[-300:]}
+
+def _install_ssh_key(host: str, port: int, user: str, password: str) -> dict:
+    """One-time: appends our public key to the target's authorized_keys using the
+    given password. Idempotent — skips if the key is already present."""
+    env = os.environ.copy()
+    env["SSHPASS"] = password
+    remote_script = (
+        "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && "
+        "chmod 600 ~/.ssh/authorized_keys && "
+        "KEY=$(cat) && grep -qF \"$KEY\" ~/.ssh/authorized_keys || echo \"$KEY\" >> ~/.ssh/authorized_keys"
+    )
+    try:
+        result = subprocess.run(
+            ["sshpass", "-e", "ssh", "-o", "BatchMode=no", "-o", "StrictHostKeyChecking=accept-new",
+             "-o", "ConnectTimeout=8", "-p", str(port), f"{user}@{host}", remote_script],
+            input=SSH_PUBKEY, capture_output=True, text=True, timeout=12, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Connection timed out"}
+    if result.returncode == 0:
+        return {"ok": True}
+    return {"ok": False, "error": (result.stderr or result.stdout).strip()[-300:]}
+
+def _remove_ssh_key(entry: dict) -> bool:
+    """Best-effort cleanup when a saved connection is deleted: removes our public
+    key from the target's authorized_keys, using the key itself. Never raises —
+    if the host is unreachable the key is simply left there."""
+    remote_script = (
+        "KEY=$(cat) && grep -vF \"$KEY\" ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp "
+        "&& mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys"
+    )
+    try:
+        result = subprocess.run(
+            ["ssh", "-i", SSH_KEY_PATH, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+             "-o", "ConnectTimeout=6", "-p", str(entry.get("port", 22)), f"{entry['user']}@{entry['host']}", remote_script],
+            input=SSH_PUBKEY, capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
 def load_ssh_connections() -> list[dict]:
     if not os.path.exists(SSH_CREDS_FILE):
         return []
@@ -1012,9 +1080,10 @@ def shell_delete(session: str = Query(...), _=Depends(verify_key)):
 
 
 # ── Saved SSH connections ────────────────────────────────────────────────────
-# Credentials live only on this server (encrypted at rest), never on the phone.
-# Connecting reuses the shell-session machinery above: it's a tmux session like
-# any other, just one that auto-runs `ssh` on creation.
+# No password is ever stored. The password is only used once, transiently, to
+# install our shared access key (SSH_KEY_PATH) on the target — after that,
+# every connection uses the key. Connecting reuses the shell-session machinery
+# above: it's a tmux session like any other, just one that auto-runs `ssh`.
 
 @app.get("/ssh-connections")
 def list_ssh_connections(_=Depends(verify_key)):
@@ -1030,14 +1099,12 @@ def create_ssh_connection(body: dict = Body(...), _=Depends(verify_key)):
     port = int(body.get("port") or 22)
     if not name or not host or not user:
         raise HTTPException(status_code=400, detail="name, host and user are required")
-    entry = {
-        "id": uuid.uuid4().hex,
-        "name": name,
-        "host": host,
-        "port": port,
-        "user": user,
-        "password_enc": _ssh_fernet.encrypt(password.encode()).decode(),
-    }
+    if not password:
+        raise HTTPException(status_code=400, detail="password is required to install the access key")
+    install = _install_ssh_key(host, port, user, password)
+    if not install["ok"]:
+        raise HTTPException(status_code=400, detail=f"Could not install access key: {install['error']}")
+    entry = {"id": uuid.uuid4().hex, "name": name, "host": host, "port": port, "user": user}
     conns = load_ssh_connections()
     conns.append(entry)
     save_ssh_connections(conns)
@@ -1058,7 +1125,10 @@ def update_ssh_connection(id: str = Query(...), body: dict = Body(...), _=Depend
         entry["port"] = int(body["port"])
     password = body.get("password", "")
     if password:
-        entry["password_enc"] = _ssh_fernet.encrypt(password.encode()).decode()
+        install = _install_ssh_key(entry["host"], entry.get("port", 22), entry["user"], password)
+        if not install["ok"]:
+            raise HTTPException(status_code=400, detail=f"Could not install access key: {install['error']}")
+    entry.pop("password_enc", None)  # drop any legacy stored password once this entry is touched
     save_ssh_connections(conns)
     return {"ok": True, "connection": _ssh_public(entry)}
 
@@ -1066,48 +1136,41 @@ def update_ssh_connection(id: str = Query(...), body: dict = Body(...), _=Depend
 @app.delete("/ssh-connections")
 def delete_ssh_connection(id: str = Query(...), _=Depends(verify_key)):
     conns = load_ssh_connections()
-    remaining = [c for c in conns if c["id"] != id]
-    if len(remaining) == len(conns):
+    entry = next((c for c in conns if c["id"] == id), None)
+    if not entry:
         raise HTTPException(status_code=404, detail="Connection not found")
-    save_ssh_connections(remaining)
+    _remove_ssh_key(entry)  # best-effort; proceed regardless of outcome
+    save_ssh_connections([c for c in conns if c["id"] != id])
     return {"ok": True}
 
 
 @app.post("/ssh-test")
 def test_ssh_connection(body: dict = Body(...), _=Depends(verify_key)):
-    """Quick connectivity check — doesn't open a tmux session. Either `id` (test
-    a saved connection, reusing its stored password) or raw host/port/user/password
-    (test before saving, e.g. while editing)."""
+    """Quick connectivity check — doesn't open a tmux session. `id` tests a saved
+    connection via its installed key; raw host/port/user/password tests with a
+    password instead (used before the connection is even saved)."""
     id_ = body.get("id")
     if id_:
         entry = next((c for c in load_ssh_connections() if c["id"] == id_), None)
         if not entry:
             raise HTTPException(status_code=404, detail="Connection not found")
-        host = entry["host"]
-        port = int(entry.get("port", 22))
-        user = entry["user"]
-        password = _ssh_fernet.decrypt(entry["password_enc"].encode()).decode()
-    else:
-        host = body.get("host", "").strip()
-        port = int(body.get("port") or 22)
-        user = body.get("user", "").strip()
-        password = body.get("password", "")
-        if not host or not user:
-            raise HTTPException(status_code=400, detail="host and user are required")
-
+        return _ssh_check(
+            ["ssh", "-i", SSH_KEY_PATH, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+             "-o", "ConnectTimeout=8", "-p", str(entry.get("port", 22)), f"{entry['user']}@{entry['host']}", "exit"],
+        )
+    host = body.get("host", "").strip()
+    port = int(body.get("port") or 22)
+    user = body.get("user", "").strip()
+    password = body.get("password", "")
+    if not host or not user:
+        raise HTTPException(status_code=400, detail="host and user are required")
     env = os.environ.copy()
     env["SSHPASS"] = password
-    try:
-        result = subprocess.run(
-            ["sshpass", "-e", "ssh", "-o", "BatchMode=no", "-o", "StrictHostKeyChecking=accept-new",
-             "-o", "ConnectTimeout=8", "-p", str(port), f"{user}@{host}", "exit"],
-            capture_output=True, text=True, timeout=12, env=env,
-        )
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "Connection timed out"}
-    if result.returncode == 0:
-        return {"ok": True}
-    return {"ok": False, "error": (result.stderr or result.stdout).strip()[-300:]}
+    return _ssh_check(
+        ["sshpass", "-e", "ssh", "-o", "BatchMode=no", "-o", "StrictHostKeyChecking=accept-new",
+         "-o", "ConnectTimeout=8", "-p", str(port), f"{user}@{host}", "exit"],
+        env=env,
+    )
 
 
 def _ssh_pane_alive(session_name: str) -> bool:
@@ -1127,24 +1190,30 @@ def _ssh_pane_alive(session_name: str) -> bool:
 
 @app.post("/ssh-connect")
 def ssh_connect(id: str = Query(...), _=Depends(verify_key)):
-    """Opens (or reattaches to) a tmux session that SSHes into a saved connection.
-    The password is passed via a session-local env var, never typed into the pane,
-    so it never appears in the terminal's visible output or history."""
-    entry = next((c for c in load_ssh_connections() if c["id"] == id), None)
+    """Opens (or reattaches to) a tmux session that SSHes into a saved connection,
+    using our installed access key — no password is stored or typed into the
+    pane. Connections saved before the key-based switch still carry an encrypted
+    password; those are migrated transparently here (key installed, password
+    dropped) the first time they're used after the upgrade."""
+    conns = load_ssh_connections()
+    entry = next((c for c in conns if c["id"] == id), None)
     if not entry:
         raise HTTPException(status_code=404, detail="Connection not found")
+    if entry.get("password_enc"):
+        password = _ssh_fernet.decrypt(entry["password_enc"].encode()).decode()
+        if _install_ssh_key(entry["host"], entry.get("port", 22), entry["user"], password)["ok"]:
+            entry.pop("password_enc", None)
+            save_ssh_connections(conns)
     session_name = _ssh_session_name(entry)
     if not _ssh_pane_alive(session_name):
         if is_running(session_name):
             subprocess.run(["tmux", "kill-session", "-t", tmux_target(session_name)], capture_output=True)
-        password = _ssh_fernet.decrypt(entry["password_enc"].encode()).decode()
         subprocess.run(
-            ["tmux", "new-session", "-d", "-s", session_name, "-c", os.path.expanduser("~"),
-             "-e", f"SSHPASS={password}"],
+            ["tmux", "new-session", "-d", "-s", session_name, "-c", os.path.expanduser("~")],
             capture_output=True, text=True,
         )
         ssh_cmd = (
-            "sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 "
+            f"ssh -i {shlex.quote(SSH_KEY_PATH)} -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 "
             f"-p {int(entry.get('port', 22))} {shlex.quote(entry['user'])}@{shlex.quote(entry['host'])}"
         )
         subprocess.run(["tmux", "send-keys", "-t", tmux_target(session_name), ssh_cmd, "Enter"], capture_output=True)
