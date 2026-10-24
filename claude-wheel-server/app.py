@@ -99,8 +99,14 @@ def save_ssh_connections(conns: list[dict]):
     with open(SSH_CREDS_FILE, "w") as f:
         json.dump(conns, f, indent=2)
 
+def _ssh_session_name(entry: dict) -> str:
+    return "ssh-" + re.sub(r"[^a-z0-9_-]+", "-", entry["name"].strip().lower()).strip("-")
+
 def _ssh_public(c: dict) -> dict:
-    return {"id": c["id"], "name": c["name"], "host": c["host"], "user": c["user"]}
+    return {
+        "id": c["id"], "name": c["name"], "host": c["host"], "port": c.get("port", 22), "user": c["user"],
+        "connected": _ssh_pane_alive(_ssh_session_name(c)),
+    }
 
 def tmux_target(session: str) -> str:
     """Exact-match tmux target. Without '=', tmux -t falls back to prefix matching,
@@ -278,11 +284,15 @@ _TTS_CONCURRENCY = asyncio.Semaphore(2)
 
 TTS_PROXY_URL = os.environ.get("TTS_PROXY_URL", "").rstrip("/")
 TTS_PROXY_KEY = os.environ.get("TTS_PROXY_KEY", "")
+_default_ca = os.path.expanduser("~/certs/ca/root-ca.crt")
+TTS_PROXY_CA = os.environ.get("TTS_PROXY_CA") or (_default_ca if os.path.exists(_default_ca) else True)
 
 async def _tts_via_proxy(text: str, voice: str) -> bytes:
     """Routes the edge-tts call through claude-wheel-tts-proxy on a separate VPS
-    whose IP isn't blocked by Microsoft. See TTS_PROXY_URL/TTS_PROXY_KEY in .env."""
-    async with httpx.AsyncClient(timeout=30) as client:
+    whose IP isn't blocked by Microsoft. See TTS_PROXY_URL/TTS_PROXY_KEY in .env.
+    Trusts our own private CA (root-ca.crt) by default, since the proxy's cert
+    is typically issued by it rather than a public CA."""
+    async with httpx.AsyncClient(timeout=30, verify=TTS_PROXY_CA) as client:
         r = await client.post(
             f"{TTS_PROXY_URL}/tts",
             headers={"X-Api-Key": TTS_PROXY_KEY},
@@ -1017,12 +1027,14 @@ def create_ssh_connection(body: dict = Body(...), _=Depends(verify_key)):
     host = body.get("host", "").strip()
     user = body.get("user", "").strip()
     password = body.get("password", "")
+    port = int(body.get("port") or 22)
     if not name or not host or not user:
         raise HTTPException(status_code=400, detail="name, host and user are required")
     entry = {
         "id": uuid.uuid4().hex,
         "name": name,
         "host": host,
+        "port": port,
         "user": user,
         "password_enc": _ssh_fernet.encrypt(password.encode()).decode(),
     }
@@ -1042,6 +1054,8 @@ def update_ssh_connection(id: str = Query(...), body: dict = Body(...), _=Depend
         value = body.get(field, "").strip()
         if value:
             entry[field] = value
+    if body.get("port"):
+        entry["port"] = int(body["port"])
     password = body.get("password", "")
     if password:
         entry["password_enc"] = _ssh_fernet.encrypt(password.encode()).decode()
@@ -1059,6 +1073,58 @@ def delete_ssh_connection(id: str = Query(...), _=Depends(verify_key)):
     return {"ok": True}
 
 
+@app.post("/ssh-test")
+def test_ssh_connection(body: dict = Body(...), _=Depends(verify_key)):
+    """Quick connectivity check — doesn't open a tmux session. Either `id` (test
+    a saved connection, reusing its stored password) or raw host/port/user/password
+    (test before saving, e.g. while editing)."""
+    id_ = body.get("id")
+    if id_:
+        entry = next((c for c in load_ssh_connections() if c["id"] == id_), None)
+        if not entry:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        host = entry["host"]
+        port = int(entry.get("port", 22))
+        user = entry["user"]
+        password = _ssh_fernet.decrypt(entry["password_enc"].encode()).decode()
+    else:
+        host = body.get("host", "").strip()
+        port = int(body.get("port") or 22)
+        user = body.get("user", "").strip()
+        password = body.get("password", "")
+        if not host or not user:
+            raise HTTPException(status_code=400, detail="host and user are required")
+
+    env = os.environ.copy()
+    env["SSHPASS"] = password
+    try:
+        result = subprocess.run(
+            ["sshpass", "-e", "ssh", "-o", "BatchMode=no", "-o", "StrictHostKeyChecking=accept-new",
+             "-o", "ConnectTimeout=8", "-p", str(port), f"{user}@{host}", "exit"],
+            capture_output=True, text=True, timeout=12, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Connection timed out"}
+    if result.returncode == 0:
+        return {"ok": True}
+    return {"ok": False, "error": (result.stderr or result.stdout).strip()[-300:]}
+
+
+def _ssh_pane_alive(session_name: str) -> bool:
+    """True only if the pane's foreground process is still ssh (or sshpass, which
+    doesn't exec() into ssh — it runs it as a child and stays as the reported
+    foreground process) — i.e. the connection is actually active, not just that
+    the tmux session exists (it still would after the ssh command inside it
+    exited, e.g. on failure)."""
+    if not is_running(session_name):
+        return False
+    result = subprocess.run(
+        ["tmux", "display-message", "-t", tmux_target(session_name), "-p", "#{pane_current_command}"],
+        capture_output=True, text=True,
+    )
+    return result.returncode == 0 and result.stdout.strip() in ("ssh", "sshpass")
+
+
 @app.post("/ssh-connect")
 def ssh_connect(id: str = Query(...), _=Depends(verify_key)):
     """Opens (or reattaches to) a tmux session that SSHes into a saved connection.
@@ -1067,8 +1133,10 @@ def ssh_connect(id: str = Query(...), _=Depends(verify_key)):
     entry = next((c for c in load_ssh_connections() if c["id"] == id), None)
     if not entry:
         raise HTTPException(status_code=404, detail="Connection not found")
-    session_name = "ssh-" + re.sub(r"[^a-z0-9_-]+", "-", entry["name"].strip().lower()).strip("-")
-    if not is_running(session_name):
+    session_name = _ssh_session_name(entry)
+    if not _ssh_pane_alive(session_name):
+        if is_running(session_name):
+            subprocess.run(["tmux", "kill-session", "-t", tmux_target(session_name)], capture_output=True)
         password = _ssh_fernet.decrypt(entry["password_enc"].encode()).decode()
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", session_name, "-c", os.path.expanduser("~"),
@@ -1077,10 +1145,23 @@ def ssh_connect(id: str = Query(...), _=Depends(verify_key)):
         )
         ssh_cmd = (
             "sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 "
-            f"{shlex.quote(entry['user'])}@{shlex.quote(entry['host'])}"
+            f"-p {int(entry.get('port', 22))} {shlex.quote(entry['user'])}@{shlex.quote(entry['host'])}"
         )
         subprocess.run(["tmux", "send-keys", "-t", tmux_target(session_name), ssh_cmd, "Enter"], capture_output=True)
     return {"ok": True, "session": session_name}
+
+
+@app.post("/ssh-disconnect")
+def ssh_disconnect(id: str = Query(...), _=Depends(verify_key)):
+    """Kills the live tmux session for a saved connection, if any. The saved
+    connection itself (and its password) is untouched — use DELETE /ssh-connections
+    to remove that."""
+    entry = next((c for c in load_ssh_connections() if c["id"] == id), None)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    session_name = _ssh_session_name(entry)
+    subprocess.run(["tmux", "kill-session", "-t", tmux_target(session_name)], capture_output=True)
+    return {"ok": True}
 
 
 # ── Auto-close idle sessions ────────────────────────────────────────────────

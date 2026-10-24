@@ -304,15 +304,18 @@ export default function VoiceScreen() {
   const [newShellSessionName, setNewShellSessionName] = useState('');
   const [creatingShellSession, setCreatingShellSession] = useState(false);
   const [sshConnectionsExpanded, setSshConnectionsExpanded] = useState(false);
-  const [sshConnections, setSshConnections] = useState<{id: string; name: string; host: string; user: string}[]>([]);
+  const [sshConnections, setSshConnections] = useState<{id: string; name: string; host: string; port: number; user: string; connected: boolean}[]>([]);
   const [connectingSshId, setConnectingSshId] = useState<string | null>(null);
   const [newSshExpanded, setNewSshExpanded] = useState(false);
   const [sshEditId, setSshEditId] = useState<string | null>(null);
   const [sshFormName, setSshFormName] = useState('');
   const [sshFormHost, setSshFormHost] = useState('');
+  const [sshFormPort, setSshFormPort] = useState('');
   const [sshFormUser, setSshFormUser] = useState('');
   const [sshFormPassword, setSshFormPassword] = useState('');
   const [savingSsh, setSavingSsh] = useState(false);
+  const [testingSsh, setTestingSsh] = useState(false);
+  const [sshTestResult, setSshTestResult] = useState<string | null>(null);
   const [openShellSessions, setOpenShellSessions] = useState<string[]>([]);
   const [shellScreens, setShellScreens] = useState<{[name: string]: string}>({});
   const [shellCursors, setShellCursors] = useState<{[name: string]: {x: number, y: number, paneHeight: number, totalLines: number} | null}>({});
@@ -888,12 +891,32 @@ export default function VoiceScreen() {
     }
   }
 
-  function startEditSsh(conn: {id: string; name: string; host: string; user: string}) {
+  function disconnectSsh(conn: {id: string; name: string}) {
+    Alert.alert(
+      'Disconnect',
+      `Close the SSH connection to "${conn.name}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Disconnect', style: 'destructive', onPress: async () => {
+          try {
+            await fetch(`${serverUrl}/ssh-disconnect?id=${encodeURIComponent(conn.id)}`, {
+              method: 'POST', headers: apiHeaders(),
+            });
+          } catch {}
+          await loadSessions();
+        }},
+      ]
+    );
+  }
+
+  function startEditSsh(conn: {id: string; name: string; host: string; port: number; user: string}) {
     setSshEditId(conn.id);
     setSshFormName(conn.name);
     setSshFormHost(conn.host);
+    setSshFormPort(String(conn.port || 22));
     setSshFormUser(conn.user);
     setSshFormPassword('');
+    setSshTestResult(null);
     setNewSshExpanded(true);
   }
 
@@ -901,14 +924,17 @@ export default function VoiceScreen() {
     setSshEditId(null);
     setSshFormName('');
     setSshFormHost('');
+    setSshFormPort('');
     setSshFormUser('');
     setSshFormPassword('');
+    setSshTestResult(null);
     setNewSshExpanded(false);
   }
 
   async function saveSshConnection() {
     const name = sshFormName.trim();
     const host = sshFormHost.trim();
+    const port = parseInt(sshFormPort.trim(), 10) || 22;
     const user = sshFormUser.trim();
     if (!name || !host || !user) return;
     if (!sshEditId && !sshFormPassword) return;
@@ -918,13 +944,13 @@ export default function VoiceScreen() {
         await fetch(`${serverUrl}/ssh-connections?id=${encodeURIComponent(sshEditId)}`, {
           method: 'PUT',
           headers: apiHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ name, host, user, password: sshFormPassword }),
+          body: JSON.stringify({ name, host, port, user, password: sshFormPassword }),
         });
       } else {
         await fetch(`${serverUrl}/ssh-connections`, {
           method: 'POST',
           headers: apiHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ name, host, user, password: sshFormPassword }),
+          body: JSON.stringify({ name, host, port, user, password: sshFormPassword }),
         });
       }
       resetSshForm();
@@ -933,6 +959,32 @@ export default function VoiceScreen() {
       Alert.alert('Error', String(e?.message ?? e));
     } finally {
       setSavingSsh(false);
+    }
+  }
+
+  async function testSshConnection() {
+    setTestingSsh(true);
+    setSshTestResult(null);
+    try {
+      const body: any = (sshEditId && !sshFormPassword)
+        ? { id: sshEditId }
+        : {
+            host: sshFormHost.trim(),
+            port: parseInt(sshFormPort.trim(), 10) || 22,
+            user: sshFormUser.trim(),
+            password: sshFormPassword,
+          };
+      const r = await fetch(`${serverUrl}/ssh-test`, {
+        method: 'POST',
+        headers: apiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      setSshTestResult(data.ok ? 'Подключение успешно ✅' : `Ошибка: ${data.error || 'не удалось подключиться'}`);
+    } catch (e: any) {
+      setSshTestResult('Ошибка: ' + String(e?.message ?? e));
+    } finally {
+      setTestingSsh(false);
     }
   }
 
@@ -1276,14 +1328,15 @@ export default function VoiceScreen() {
   }
 
   // ── TTS ────────────────────────────────────────────────────────────────────
-  function splitIntoChunks(text: string, minLen = 100): string[] {
+  function splitIntoChunks(text: string, minLen = 100, firstMinLen = 50): string[] {
     const parts = text.split(/(?<=[.!?])\s+(?=[А-ЯA-ZЁ])/);
     const chunks: string[] = [];
     let current = '';
     for (const part of parts) {
+      const limit = chunks.length === 0 ? firstMinLen : minLen;
       if (!current) {
         current = part;
-      } else if (current.length + 1 + part.length > minLen) {
+      } else if (current.length + 1 + part.length > limit) {
         chunks.push(current);
         current = part;
       } else {
@@ -1308,35 +1361,37 @@ export default function VoiceScreen() {
     });
   }
 
+  async function fetchTtsBase64(text: string): Promise<string> {
+    const resp = await fetch(`${serverUrl}/tts?api_key=${encodeURIComponent(serverApiKey)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, language, gender: voiceGender }),
+    });
+    if (!resp.ok) throw new Error(`TTS error: ${resp.status}`);
+    const blob = await resp.blob();
+    return new Promise((res, rej) => {
+      const reader = new FileReader();
+      reader.onload = () => res((reader.result as string).split(',')[1]);
+      reader.onerror = rej;
+      reader.readAsDataURL(blob);
+    });
+  }
+
   async function speak(text: string): Promise<void> {
     try {
       const chunks = splitIntoChunks(text);
       if (chunks.length > 1) {
-        const resp = await fetch(`${serverUrl}/tts?api_key=${encodeURIComponent(serverApiKey)}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ texts: chunks, language, gender: voiceGender }),
-        });
-        if (!resp.ok) throw new Error(`TTS error: ${resp.status}`);
-        const data = await resp.json();
-        for (let i = 0; i < data.chunks.length; i++) {
+        // Fire all chunk requests now, but await+play them in order — each
+        // plays as soon as its own request resolves, not blocked by the rest.
+        const promises = chunks.map(chunk => fetchTtsBase64(chunk));
+        for (let i = 0; i < promises.length; i++) {
           if (cancelledRef.current) return;
-          await playBase64Mp3(data.chunks[i], i);
+          const base64 = await promises[i];
+          if (cancelledRef.current) return;
+          await playBase64Mp3(base64, i);
         }
       } else {
-        const resp = await fetch(`${serverUrl}/tts?api_key=${encodeURIComponent(serverApiKey)}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, language, gender: voiceGender }),
-        });
-        if (!resp.ok) throw new Error(`TTS error: ${resp.status}`);
-        const blob = await resp.blob();
-        const base64: string = await new Promise((res, rej) => {
-          const reader = new FileReader();
-          reader.onload = () => res((reader.result as string).split(',')[1]);
-          reader.onerror = rej;
-          reader.readAsDataURL(blob);
-        });
+        const base64 = await fetchTtsBase64(text);
         if (cancelledRef.current) return;
         await playBase64Mp3(base64, 0);
       }
@@ -2362,14 +2417,21 @@ export default function VoiceScreen() {
                       disabled={connectingSshId === c.id}
                     >
                       <Text style={styles.sessionName}>{c.name}</Text>
-                      <Text style={styles.sessionDir}>{c.user}@{c.host}</Text>
+                      <Text style={styles.sessionDir}>{c.user}@{c.host}:{c.port || 22}</Text>
                     </TouchableOpacity>
                     {connectingSshId === c.id
                       ? <ActivityIndicator color="#fff" style={{ marginHorizontal: 12 }} />
-                      : <TouchableOpacity onPress={() => deleteSshConnection(c)} style={styles.sessionCloseBtn}>
-                          <Text style={styles.sessionCloseText}>✕</Text>
+                      : <TouchableOpacity
+                          onPress={() => c.connected ? disconnectSsh(c) : undefined}
+                          style={styles.sessionCloseBtn}
+                          disabled={!c.connected}
+                        >
+                          <Text style={{ fontSize: 16 }}>{c.connected ? '🟢' : '⚪'}</Text>
                         </TouchableOpacity>
                     }
+                    <TouchableOpacity onPress={() => deleteSshConnection(c)} style={styles.sessionCloseBtn}>
+                      <Text style={styles.sessionCloseText}>✕</Text>
+                    </TouchableOpacity>
                   </View>
                 ))
             )}
@@ -2386,15 +2448,25 @@ export default function VoiceScreen() {
                 placeholderTextColor="#555"
                 autoCapitalize="none"
               />
-              <TextInput
-                style={styles.input}
-                value={sshFormHost}
-                onChangeText={setSshFormHost}
-                placeholder="Host / IP"
-                placeholderTextColor="#555"
-                autoCapitalize="none"
-                keyboardType="url"
-              />
+              <View style={{ flexDirection: 'row' }}>
+                <TextInput
+                  style={[styles.input, { flex: 1, marginRight: 8 }]}
+                  value={sshFormHost}
+                  onChangeText={setSshFormHost}
+                  placeholder="Host / IP"
+                  placeholderTextColor="#555"
+                  autoCapitalize="none"
+                  keyboardType="url"
+                />
+                <TextInput
+                  style={[styles.input, { width: 80 }]}
+                  value={sshFormPort}
+                  onChangeText={setSshFormPort}
+                  placeholder="22"
+                  placeholderTextColor="#555"
+                  keyboardType="number-pad"
+                />
+              </View>
               <TextInput
                 style={styles.input}
                 value={sshFormUser}
@@ -2412,6 +2484,13 @@ export default function VoiceScreen() {
                 autoCapitalize="none"
                 secureTextEntry
               />
+              <TouchableOpacity style={[styles.modalClose, { backgroundColor: '#333' }]} onPress={testSshConnection} disabled={testingSsh}>
+                {testingSsh
+                  ? <ActivityIndicator color="#fff" />
+                  : <Text style={styles.modalCloseText}>Test connection</Text>
+                }
+              </TouchableOpacity>
+              {sshTestResult && <Text style={{ color: sshTestResult.startsWith('Подключение') ? '#4AE27A' : '#ff6b6b', paddingHorizontal: 4, paddingBottom: 8 }}>{sshTestResult}</Text>}
               <TouchableOpacity style={styles.modalClose} onPress={saveSshConnection} disabled={savingSsh}>
                 {savingSsh
                   ? <ActivityIndicator color="#fff" />

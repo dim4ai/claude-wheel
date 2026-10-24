@@ -22,6 +22,7 @@ After=network.target
 WorkingDirectory=$SCRIPT_DIR
 ExecStart=$SCRIPT_DIR/venv/bin/uvicorn app:app --host 0.0.0.0 --port $PORT
 Restart=always
+KillMode=process
 User=$USER
 
 [Install]
