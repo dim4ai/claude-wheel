@@ -1361,23 +1361,37 @@ export default function VoiceScreen() {
     });
   }
 
+  const ttsGenRef = useRef(0);
+
   async function fetchTtsBase64(text: string): Promise<string> {
-    const resp = await fetch(`${serverUrl}/tts?api_key=${encodeURIComponent(serverApiKey)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, language, gender: voiceGender }),
-    });
-    if (!resp.ok) throw new Error(`TTS error: ${resp.status}`);
-    const blob = await resp.blob();
-    return new Promise((res, rej) => {
-      const reader = new FileReader();
-      reader.onload = () => res((reader.result as string).split(',')[1]);
-      reader.onerror = rej;
-      reader.readAsDataURL(blob);
-    });
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(), 25000);
+    try {
+      const resp = await fetch(`${serverUrl}/tts?api_key=${encodeURIComponent(serverApiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, language, gender: voiceGender }),
+        signal: abort.signal,
+      });
+      if (!resp.ok) throw new Error(`TTS error: ${resp.status}`);
+      const blob = await resp.blob();
+      return new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onload = () => res((reader.result as string).split(',')[1]);
+        reader.onerror = rej;
+        reader.readAsDataURL(blob);
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   async function speak(text: string): Promise<void> {
+    // A hung chunk request can resolve long after the user cancelled this
+    // speak() call and started a new one (which resets cancelledRef) — the
+    // generation check below catches that case, which a shared boolean can't.
+    const myGen = ++ttsGenRef.current;
+    const stale = () => cancelledRef.current || ttsGenRef.current !== myGen;
     try {
       const chunks = splitIntoChunks(text);
       if (chunks.length > 1) {
@@ -1385,14 +1399,14 @@ export default function VoiceScreen() {
         // plays as soon as its own request resolves, not blocked by the rest.
         const promises = chunks.map(chunk => fetchTtsBase64(chunk));
         for (let i = 0; i < promises.length; i++) {
-          if (cancelledRef.current) return;
+          if (stale()) return;
           const base64 = await promises[i];
-          if (cancelledRef.current) return;
+          if (stale()) return;
           await playBase64Mp3(base64, i);
         }
       } else {
         const base64 = await fetchTtsBase64(text);
-        if (cancelledRef.current) return;
+        if (stale()) return;
         await playBase64Mp3(base64, 0);
       }
     } catch (e) {
