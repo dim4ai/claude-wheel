@@ -382,23 +382,20 @@ async def _tts_via_proxy(text: str, voice: str) -> bytes:
         r.raise_for_status()
         return r.content
 
-async def _tts_chunk(text: str, voice: str, retries: int | None = None) -> bytes:
+async def _tts_chunk(text: str, voice: str, retries: int = 0) -> bytes:
     """edge-tts talks to an unofficial Microsoft endpoint. As of 2026-10-14 our
     own IP was fully blocked (100% 403, even single sequential requests) —
     likely because our own concurrency+retry pattern (parallel WS handshakes,
     retries firing in bursts) looked like scraping/abuse rather than normal
-    use. Retries are pointless against a full block, so direct calls default
-    to 0 retries and concurrency is capped low.
-    Set TTS_PROXY_URL to route around the block via claude-wheel-tts-proxy on
-    a separate VPS instead — there, failures seen so far look like transient
-    rate-limiting rather than a hard block (occasional 500s in a burst, gone
-    a minute later), so proxy calls default to 1 retry.
+    use. Retries are pointless against a block and only add to that
+    footprint — stay at 0 here too, even through the proxy; getting that IP
+    blocked the same way means starting this whole dance over on a third VPS.
+    Set TTS_PROXY_URL to route around a block on our own IP via
+    claude-wheel-tts-proxy on a separate VPS; concurrency is capped low too.
 
     Never raises — a failed chunk (timeout, proxy down, block, ...) gets the
     pre-recorded error clip instead, so the client always gets 200 audio back
     and the rest of the chunks keep playing."""
-    if retries is None:
-        retries = 1 if TTS_PROXY_URL else 0
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
         try:
