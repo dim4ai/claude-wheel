@@ -379,7 +379,12 @@ async def _tts_via_proxy(text: str, voice: str) -> bytes:
             headers={"X-Api-Key": TTS_PROXY_KEY},
             json={"text": text, "voice": voice},
         )
-        r.raise_for_status()
+        if r.status_code >= 400:
+            # raise_for_status()'s message is just "500 for url ..." — the
+            # proxy's actual error (why edge-tts failed on its end) is in the
+            # body, and that's the only diagnostic we get without SSH access
+            # to that VPS (port 22 isn't reachable from here).
+            raise RuntimeError(f"proxy {r.status_code}: {r.text[:300]}")
         return r.content
 
 async def _tts_chunk(text: str, voice: str, retries: int = 0) -> bytes:
