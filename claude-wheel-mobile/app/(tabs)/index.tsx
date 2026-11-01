@@ -366,6 +366,7 @@ export default function VoiceScreen() {
   const [servers, setServers]             = useState<ServerProfile[]>([]);
   const [currentServerId, setCurrentServerId] = useState('');
   const [serversOpen, setServersOpen]     = useState(false);
+  const [serverDropdownOpen, setServerDropdownOpen] = useState(false);
   const [serverFormOpen, setServerFormOpen] = useState(false);
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [serverFormName, setServerFormName]     = useState('');
@@ -1365,7 +1366,10 @@ export default function VoiceScreen() {
 
   async function fetchTtsBase64(text: string): Promise<string> {
     const abort = new AbortController();
-    const timeout = setTimeout(() => abort.abort(), 25000);
+    // Server's own per-chunk timeout (proxy call) is 45s and always resolves
+    // with 200 audio (real or a fallback "error" clip) instead of throwing —
+    // so this just needs to outlast that, not race it.
+    const timeout = setTimeout(() => abort.abort(), 55000);
     try {
       const resp = await fetch(`${serverUrl}/tts?api_key=${encodeURIComponent(serverApiKey)}`, {
         method: 'POST',
@@ -1400,9 +1404,18 @@ export default function VoiceScreen() {
         const promises = chunks.map(chunk => fetchTtsBase64(chunk));
         for (let i = 0; i < promises.length; i++) {
           if (stale()) return;
-          const base64 = await promises[i];
-          if (stale()) return;
-          await playBase64Mp3(base64, i);
+          try {
+            const base64 = await promises[i];
+            if (stale()) return;
+            await playBase64Mp3(base64, i);
+          } catch (e) {
+            // A single chunk failing outright (network drop, abort, bad
+            // status — the server itself already falls back to an "error"
+            // clip for TTS-specific failures) shouldn't take the rest of the
+            // response down with it. Skip it and keep going.
+            if (stale()) return;
+            console.warn('TTS chunk failed, skipping:', e);
+          }
         }
       } else {
         const base64 = await fetchTtsBase64(text);
@@ -2287,7 +2300,24 @@ export default function VoiceScreen() {
       <Modal visible={sessionsOpen} transparent animationType="slide" onRequestClose={() => setSessionsOpen(false)}>
         <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <ScrollView style={styles.modalSheet} onStartShouldSetResponder={() => true} keyboardShouldPersistTaps="handled">
-            <Text style={styles.modalTitle}>🖥 {servers.find(s => s.id === currentServerId)?.name ?? 'No server'}</Text>
+            <TouchableOpacity onPress={() => setServerDropdownOpen(v => !v)}>
+              <Text style={styles.modalTitle}>
+                🖥 {servers.find(s => s.id === currentServerId)?.name ?? 'No server'} {servers.length > 1 ? (serverDropdownOpen ? '▲' : '▼') : ''}
+              </Text>
+            </TouchableOpacity>
+            {serverDropdownOpen && servers.map(s => (
+              <TouchableOpacity
+                key={s.id}
+                style={styles.sessionRow}
+                onPress={() => {
+                  applyServer(s);
+                  setServerDropdownOpen(false);
+                  loadSessions();
+                }}
+              >
+                <Text style={styles.sessionName}>{s.id === currentServerId ? '🟢 ' : '   '}{s.name}</Text>
+              </TouchableOpacity>
+            ))}
 
             <TouchableOpacity style={styles.sectionHeader} onPress={() => setSessionsExpanded(v => !v)}>
               <Text style={styles.sectionHeaderText}>Claude sessions {sessionsExpanded ? '▲' : '▼'}</Text>

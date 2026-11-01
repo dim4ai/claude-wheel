@@ -355,12 +355,25 @@ TTS_PROXY_KEY = os.environ.get("TTS_PROXY_KEY", "")
 _default_ca = os.path.expanduser("~/certs/ca/root-ca.crt")
 TTS_PROXY_CA = os.environ.get("TTS_PROXY_CA") or (_default_ca if os.path.exists(_default_ca) else True)
 
+_TTS_ERROR_MP3_PATH = os.path.join(os.path.dirname(__file__), "assets", "tts_error.mp3")
+_tts_error_mp3_cache: bytes | None = None
+
+def _tts_error_fallback() -> bytes:
+    """A pre-generated 'Ошибка при озвучивании блока' clip, played in place of
+    a chunk whose TTS call failed, so one bad chunk doesn't silently vanish or
+    take the rest of the response down with it."""
+    global _tts_error_mp3_cache
+    if _tts_error_mp3_cache is None:
+        with open(_TTS_ERROR_MP3_PATH, "rb") as f:
+            _tts_error_mp3_cache = f.read()
+    return _tts_error_mp3_cache
+
 async def _tts_via_proxy(text: str, voice: str) -> bytes:
     """Routes the edge-tts call through claude-wheel-tts-proxy on a separate VPS
     whose IP isn't blocked by Microsoft. See TTS_PROXY_URL/TTS_PROXY_KEY in .env.
     Trusts our own private CA (root-ca.crt) by default, since the proxy's cert
     is typically issued by it rather than a public CA."""
-    async with httpx.AsyncClient(timeout=30, verify=TTS_PROXY_CA) as client:
+    async with httpx.AsyncClient(timeout=45, verify=TTS_PROXY_CA) as client:
         r = await client.post(
             f"{TTS_PROXY_URL}/tts",
             headers={"X-Api-Key": TTS_PROXY_KEY},
@@ -369,15 +382,23 @@ async def _tts_via_proxy(text: str, voice: str) -> bytes:
         r.raise_for_status()
         return r.content
 
-async def _tts_chunk(text: str, voice: str, retries: int = 0) -> bytes:
+async def _tts_chunk(text: str, voice: str, retries: int | None = None) -> bytes:
     """edge-tts talks to an unofficial Microsoft endpoint. As of 2026-10-14 our
-    IP is fully blocked (100% 403, even single sequential requests) — likely
-    because our own concurrency+retry pattern (parallel WS handshakes,
+    own IP was fully blocked (100% 403, even single sequential requests) —
+    likely because our own concurrency+retry pattern (parallel WS handshakes,
     retries firing in bursts) looked like scraping/abuse rather than normal
-    use. Retries are pointless against a full block and only add to that
-    footprint, so they're off (retries=0) and concurrency is capped low.
-    Set TTS_PROXY_URL to route around the block via claude-wheel-tts-proxy
-    on a separate VPS instead."""
+    use. Retries are pointless against a full block, so direct calls default
+    to 0 retries and concurrency is capped low.
+    Set TTS_PROXY_URL to route around the block via claude-wheel-tts-proxy on
+    a separate VPS instead — there, failures seen so far look like transient
+    rate-limiting rather than a hard block (occasional 500s in a burst, gone
+    a minute later), so proxy calls default to 1 retry.
+
+    Never raises — a failed chunk (timeout, proxy down, block, ...) gets the
+    pre-recorded error clip instead, so the client always gets 200 audio back
+    and the rest of the chunks keep playing."""
+    if retries is None:
+        retries = 1 if TTS_PROXY_URL else 0
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
         try:
@@ -394,7 +415,8 @@ async def _tts_chunk(text: str, voice: str, retries: int = 0) -> bytes:
             last_exc = e
             if attempt < retries:
                 await asyncio.sleep(0.5 * (attempt + 1) + random.uniform(0, 0.4))
-    raise last_exc
+    print(f"[tts] chunk failed, using fallback clip: {last_exc}", flush=True)
+    return _tts_error_fallback()
 
 @app.api_route("/tts", methods=["GET", "POST"])
 async def text_to_speech(
