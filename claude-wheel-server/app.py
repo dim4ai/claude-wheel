@@ -475,6 +475,15 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
     work_dir = sessions_conf[session]
 
     async with (get_session_lock(session) if lock else contextlib.AsyncExitStack()):
+        if not is_running(session):
+            # A session restarting here (after being stopped, or after an
+            # idle timeout) hits the same "trust this folder?" prompt a
+            # brand-new one does if trust was ever lost/not yet recorded.
+            # ensure_running's blind "claude --continue" + Enter doesn't
+            # handle that dialog — it just sits there while the real user
+            # text gets typed into it instead of reaching Claude. Clear that
+            # first, the same way session creation does.
+            await ensure_trusted(session, work_dir)
         just_started = ensure_running(session, work_dir)
         if just_started:
             await wait_for_claude_ready(session)
