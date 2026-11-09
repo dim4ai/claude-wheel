@@ -348,7 +348,7 @@ EDGE_TTS_VOICES = {
     'ja': {'female': 'ja-JP-NanamiNeural',    'male': 'ja-JP-KeitaNeural'},
 }
 
-_TTS_CONCURRENCY = asyncio.Semaphore(2)
+_TTS_CONCURRENCY = asyncio.Semaphore(1)
 
 TTS_PROXY_URL = os.environ.get("TTS_PROXY_URL", "").rstrip("/")
 TTS_PROXY_KEY = os.environ.get("TTS_PROXY_KEY", "")
