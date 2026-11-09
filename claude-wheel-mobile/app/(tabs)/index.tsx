@@ -30,6 +30,11 @@ import * as Clipboard from 'expo-clipboard';
 // ── Constants ────────────────────────────────────────────────────────────────
 const APP_VERSION = '1.2.0';
 const MIN_SERVER_VERSION = '1.1.2';
+// Bigger chunks = fewer TTS requests per response. Bumped up from 100/50 as an
+// experiment to see if fewer, larger requests to the proxy trip Microsoft's
+// soft-block less often than many small ones in a row — tune empirically.
+const TTS_CHUNK_MIN_LEN = 200;
+const TTS_CHUNK_FIRST_MIN_LEN = 100;
 const semverLt = (a: string, b: string) => {
   const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
   for (let i = 0; i < 3; i++) { if ((pa[i]??0) < (pb[i]??0)) return true; if ((pa[i]??0) > (pb[i]??0)) return false; }
@@ -1329,7 +1334,7 @@ export default function VoiceScreen() {
   }
 
   // ── TTS ────────────────────────────────────────────────────────────────────
-  function splitIntoChunks(text: string, minLen = 100, firstMinLen = 50): string[] {
+  function splitIntoChunks(text: string, minLen = TTS_CHUNK_MIN_LEN, firstMinLen = TTS_CHUNK_FIRST_MIN_LEN): string[] {
     const parts = text.split(/(?<=[.!?])\s+(?=[А-ЯA-ZЁ])/);
     const chunks: string[] = [];
     let current = '';
