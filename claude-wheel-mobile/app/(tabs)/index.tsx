@@ -1399,15 +1399,21 @@ export default function VoiceScreen() {
     try {
       const chunks = splitIntoChunks(text);
       if (chunks.length > 1) {
-        // Fetch strictly one at a time — the server itself only processes one
-        // TTS request at a time (to avoid tripping Microsoft's soft-block), so
-        // firing all chunk requests up front just means later chunks sit
-        // queued server-side until their OWN 55s client timeout expires and
-        // aborts them, silently dropping the tail of long responses.
+        // Only one chunk request in flight at a time (the server itself also
+        // only processes one at a time, to ease load on the TTS proxy) — but
+        // fetch chunk i+1 as soon as i starts playing, not after it finishes,
+        // so there's no gap at the seam. Requests still land on the server
+        // roughly one per chunk's playback duration apart, not all at once,
+        // so no single one sits queued long enough to hit its own timeout.
+        let pending = fetchTtsBase64(chunks[0]);
         for (let i = 0; i < chunks.length; i++) {
           if (stale()) return;
+          const current = pending;
+          if (i + 1 < chunks.length) {
+            pending = fetchTtsBase64(chunks[i + 1]);
+          }
           try {
-            const base64 = await fetchTtsBase64(chunks[i]);
+            const base64 = await current;
             if (stale()) return;
             await playBase64Mp3(base64, i);
           } catch (e) {
