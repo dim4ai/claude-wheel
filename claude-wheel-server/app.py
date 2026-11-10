@@ -22,6 +22,7 @@ import uuid
 
 import edge_tts
 import httpx
+import local_tts
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Query, Request, UploadFile, HTTPException, Header, Depends, Body
@@ -387,7 +388,21 @@ async def _tts_via_proxy(text: str, voice: str) -> bytes:
             raise RuntimeError(f"proxy {r.status_code}: {r.text[:300]}")
         return r.content
 
-async def _tts_chunk(text: str, voice: str, retries: int = 0) -> bytes:
+async def _local_tts_mp3(text: str, language: str, gender: str) -> bytes:
+    """local_tts gives back WAV; the client always saves chunks as .mp3
+    (fetchTtsBase64/playBase64Mp3), so re-encode here rather than teach the
+    client about a second audio format just for the fallback path."""
+    wav_bytes = await asyncio.to_thread(local_tts.synthesize, text, language, gender)
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-i", "-", "-f", "mp3", "-codec:a", "libmp3lame", "-b:a", "64k", "-",
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    mp3_bytes, _ = await proc.communicate(wav_bytes)
+    if proc.returncode != 0 or not mp3_bytes:
+        raise RuntimeError("ffmpeg wav->mp3 conversion failed")
+    return mp3_bytes
+
+async def _tts_chunk(text: str, voice: str, language: str, gender: str, retries: int = 0) -> bytes:
     """edge-tts talks to an unofficial Microsoft endpoint. As of 2026-10-14 our
     own IP was fully blocked (100% 403, even single sequential requests) —
     likely because our own concurrency+retry pattern (parallel WS handshakes,
@@ -398,9 +413,11 @@ async def _tts_chunk(text: str, voice: str, retries: int = 0) -> bytes:
     Set TTS_PROXY_URL to route around a block on our own IP via
     claude-wheel-tts-proxy on a separate VPS; concurrency is capped low too.
 
-    Never raises — a failed chunk (timeout, proxy down, block, ...) gets the
-    pre-recorded error clip instead, so the client always gets 200 audio back
-    and the rest of the chunks keep playing."""
+    Never raises — a failed chunk (timeout, proxy down, block, ...) first
+    tries local_tts (a different, offline voice) so the user still gets real
+    speech instead of a generic clip; only if that's unavailable/fails too
+    does it fall back to the pre-recorded error clip. Either way the client
+    always gets 200 audio back and the rest of the chunks keep playing."""
     last_exc: Exception | None = None
     for attempt in range(retries + 1):
         try:
@@ -417,6 +434,15 @@ async def _tts_chunk(text: str, voice: str, retries: int = 0) -> bytes:
             last_exc = e
             if attempt < retries:
                 await asyncio.sleep(0.5 * (attempt + 1) + random.uniform(0, 0.4))
+
+    if local_tts.available(language):
+        try:
+            result = await _local_tts_mp3(text, language, gender)
+            print(f"[tts] chunk failed ({last_exc}), used local fallback voice", flush=True)
+            return result
+        except Exception as e:
+            print(f"[tts] local fallback also failed ({e}), using static clip", flush=True)
+
     print(f"[tts] chunk failed, using fallback clip: {last_exc}", flush=True)
     return _tts_error_fallback()
 
@@ -445,7 +471,7 @@ async def text_to_speech(
 
     if texts:
         try:
-            results = await asyncio.gather(*[_tts_chunk(t, voice) for t in texts])
+            results = await asyncio.gather(*[_tts_chunk(t, voice, language, gender) for t in texts])
             return {"chunks": [_b64.b64encode(r).decode() for r in results]}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -453,7 +479,7 @@ async def text_to_speech(
     if text is None:
         raise HTTPException(status_code=400, detail="text parameter required")
     try:
-        mp3_buf = io.BytesIO(await _tts_chunk(text, voice))
+        mp3_buf = io.BytesIO(await _tts_chunk(text, voice, language, gender))
         mp3_buf.seek(0)
         return StreamingResponse(mp3_buf, media_type="audio/mpeg")
     except Exception as e:

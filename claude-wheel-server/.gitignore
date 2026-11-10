@@ -4,3 +4,4 @@ __pycache__/
 .env
 sessions-list.txt
 ssh-connections.json
+local_tts_models/
