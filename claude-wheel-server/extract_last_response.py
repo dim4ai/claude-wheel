@@ -82,7 +82,31 @@ def get_tmux_workdir(session: str) -> str | None:
     return None
 
 
+DEBUG_LOG = "/tmp/claude_wheel_hook.log"
+
+
+def debug(msg: str):
+    """Why the hook did or didn't write — the hook's own exit code and output
+    are invisible otherwise (Claude Code shows nothing for a silent exit)."""
+    try:
+        with open(DEBUG_LOG, "a") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} pid={os.getpid()} {msg}\n")
+    except Exception:
+        pass
+
+
 def main():
+    try:
+        _main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        import traceback
+        debug("EXCEPTION " + "".join(traceback.format_exception(e)).replace("\n", " | "))
+        raise
+
+
+def _main():
     # Read hook stdin
     try:
         hook_input = json.loads(sys.stdin.read())
@@ -91,16 +115,19 @@ def main():
 
     session_id = hook_input.get("session_id", "")
     if not session_id:
+        debug("exit: no session_id in hook input")
         sys.exit(0)
 
     tmux_session = get_tmux_session()
     if not tmux_session:
+        debug(f"exit: not in tmux (TMUX={bool(os.environ.get('TMUX'))} TMUX_PANE={os.environ.get('TMUX_PANE')}) session={session_id}")
         sys.exit(0)
 
     log_path = f"/tmp/claude_output_{tmux_session}.log"
 
     transcript = find_transcript(session_id)
     if not transcript:
+        debug(f"exit: transcript not found for {session_id} ({tmux_session})")
         sys.exit(0)
 
     id_file = Path("/tmp/claude_last_msg_id.txt")
@@ -114,16 +141,19 @@ def main():
 
     msg_id, user_text, assistant_text = extract_last_exchange(transcript)
     if not assistant_text or not msg_id:
+        debug(f"exit: no assistant text in {transcript} ({tmux_session})")
         sys.exit(0)
 
     # Skip if this message was already written (compact/resume duplicate)
     if msg_id == last_id:
+        debug(f"exit: duplicate msg_id {msg_id} ({tmux_session})")
         sys.exit(0)
 
     id_file.write_text(msg_id)
 
     with open(log_path, "a") as f:
         f.write(f"{assistant_text}\nENDENDENDENDEND\n")
+    debug(f"wrote {msg_id} ({len(assistant_text)} chars) to {log_path}")
 
     # Append to conversation log depending on CONVERSATION_LOG setting
     conv_log_mode = os.environ.get("CONVERSATION_LOG", "discussion")

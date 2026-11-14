@@ -218,6 +218,16 @@ def is_running(session: str) -> bool:
     result = subprocess.run(["tmux", "has-session", "-t", tmux_target(session)], capture_output=True)
     return result.returncode == 0
 
+def claude_alive(session: str) -> bool:
+    """True if Claude itself is the pane's foreground process. A tmux session can
+    outlive Claude (it exited, e.g. on "No, exit" in the trust dialog) — pasting
+    into it then would feed text straight to the shell."""
+    result = subprocess.run(
+        ["tmux", "display-message", "-t", tmux_target(session), "-p", "#{pane_current_command}"],
+        capture_output=True, text=True
+    )
+    return result.returncode == 0 and result.stdout.strip() in ("claude", "node")
+
 async def wait_for_claude_ready(session: str, timeout: int = 30):
     """Wait for Claude to load: first detect screen change, then wait for stability."""
     def capture():
@@ -256,14 +266,49 @@ def has_conversation_history(work_dir: str) -> bool:
     return any(f.endswith('.jsonl') for f in os.listdir(claude_projects))
 
 def ensure_running(session: str, work_dir: str) -> bool:
-    """Start session if not running. Returns True if session was just started."""
-    if not is_running(session):
+    """Start session (or Claude inside it) if not running. Returns True if Claude was just started."""
+    running = is_running(session)
+    if running and claude_alive(session):
+        return False
+    if not running:
         subprocess.run(["tmux", "new-session", "-d", "-s", session, "-c", work_dir])
-        cmd = "claude --continue" if has_conversation_history(work_dir) else "claude"
-        subprocess.run(["tmux", "send-keys", "-t", tmux_target(session), cmd, "Enter"])
-        print(f"[session] started: {session} ({cmd})", flush=True)
-        return True
-    return False
+    cmd = "claude --continue" if has_conversation_history(work_dir) else "claude"
+    subprocess.run(["tmux", "send-keys", "-t", tmux_target(session), cmd, "Enter"])
+    print(f"[session] {'started' if not running else 'restarted claude in'}: {session} ({cmd})", flush=True)
+    return True
+
+def pending_input(session: str) -> str:
+    """Text still sitting in Claude's input box (the "❯" line right above the
+    bottom rule), or "" if it's empty. Used to detect a swallowed Enter."""
+    screen = subprocess.run(
+        ["tmux", "capture-pane", "-t", tmux_target(session), "-p", "-e"],
+        capture_output=True, text=True
+    ).stdout.splitlines()
+    for i in range(len(screen) - 1, -1, -1):
+        raw = screen[i]
+        if "❯" not in raw:
+            continue
+        after = raw.split("❯", 1)[1].lstrip("\xa0 ")
+        if not any("─" * 20 in l for l in screen[i + 1:i + 4]):
+            return ""
+        # Claude shows its own next-prompt suggestion in dim text (ESC[2m);
+        # that is not user input — pressing Enter would send it.
+        if after.startswith("\x1b[2m"):
+            return ""
+        return re.sub(r"\x1b\[[0-9;]*m", "", after).strip()
+    return ""
+
+async def submit_input(session: str, attempts: int = 3):
+    """Press Enter and make sure Claude actually took the input. Right after
+    startup (esp. `claude --continue` on a long history) the first Enter can be
+    swallowed, leaving the text in the box to get glued to the next message."""
+    for attempt in range(attempts):
+        subprocess.run(["tmux", "send-keys", "-t", tmux_target(session), "\r"], capture_output=True)
+        await asyncio.sleep(1.0)
+        if not pending_input(session):
+            return
+        print(f"[ask] {session}: input still pending after Enter (attempt {attempt + 1}), retrying", flush=True)
+    print(f"[ask] {session}: input still pending after {attempts} Enters", flush=True)
 
 def stop_session(session: str):
     subprocess.run(["tmux", "kill-session", "-t", tmux_target(session)], capture_output=True)
@@ -386,6 +431,9 @@ async def _tts_via_proxy(text: str, voice: str) -> bytes:
             # body, and that's the only diagnostic we get without SSH access
             # to that VPS (port 22 isn't reachable from here).
             raise RuntimeError(f"proxy {r.status_code}: {r.text[:300]}")
+        ctype = r.headers.get("content-type", "")
+        if not ctype.startswith("audio/"):
+            raise RuntimeError(f"proxy returned non-audio ({ctype or 'no content-type'}): {r.text[:200]}")
         return r.content
 
 async def _local_tts_mp3(text: str, language: str, gender: str) -> bytes:
@@ -423,13 +471,20 @@ async def _tts_chunk(text: str, voice: str, language: str, gender: str, retries:
         try:
             async with _TTS_CONCURRENCY:
                 if TTS_PROXY_URL:
-                    return await _tts_via_proxy(text, voice)
-                communicate = edge_tts.Communicate(text, voice)
-                buf = io.BytesIO()
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio":
-                        buf.write(chunk["data"])
-                return buf.getvalue()
+                    audio, source = await _tts_via_proxy(text, voice), "proxy"
+                else:
+                    communicate = edge_tts.Communicate(text, voice)
+                    buf = io.BytesIO()
+                    async for chunk in communicate.stream():
+                        if chunk["type"] == "audio":
+                            buf.write(chunk["data"])
+                    audio, source = buf.getvalue(), "edge-tts"
+            # A "successful" response with no audio used to be returned as-is:
+            # the phone played silence and the chunk vanished without a trace.
+            if not audio:
+                raise RuntimeError(f"{source} returned empty audio")
+            print(f"[tts] {source} ok: {len(audio)} bytes for {len(text)} chars", flush=True)
+            return audio
         except Exception as e:
             last_exc = e
             if attempt < retries:
@@ -501,7 +556,7 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
     work_dir = sessions_conf[session]
 
     async with (get_session_lock(session) if lock else contextlib.AsyncExitStack()):
-        if not is_running(session):
+        if not is_running(session) or not claude_alive(session):
             # A session restarting here (after being stopped, or after an
             # idle timeout) hits the same "trust this folder?" prompt a
             # brand-new one does if trust was ever lost/not yet recorded.
@@ -537,8 +592,8 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
         result = subprocess.run(["tmux", "paste-buffer", "-t", tmux_target(session)], capture_output=True, text=True)
         if result.returncode != 0:
             raise HTTPException(status_code=503, detail="Session unavailable. Make sure Claude is running, or switch to another session.")
-        time.sleep(0.2)
-        subprocess.run(["tmux", "send-keys", "-t", tmux_target(session), "\r"], capture_output=True)
+        await asyncio.sleep(0.2)
+        await submit_input(session)
 
         # Poll for terminator
         deadline = time.time() + ASK_TIMEOUT
@@ -568,21 +623,22 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
 PROJECT_TEMPLATE = os.path.join(os.path.dirname(__file__), "templates", "new-project")
 
 def _is_trusted(path: str) -> bool:
-    """True if Claude Code has accepted the trust dialog for path or any of its
-    parents (trust is inherited by subdirectories)."""
+    """True if Claude Code has accepted the trust dialog for this path or for the
+    git repo it lives in — Claude records trust at the repo root (format/ inside
+    the claude-wheel repo is stored as the repo root). An arbitrary trusted
+    parent outside the repo does not count: Claude still prompts there."""
     try:
         with open(os.path.expanduser("~/.claude.json")) as f:
             projects = json.load(f).get("projects", {})
     except (OSError, ValueError):
         return False
-    p = os.path.abspath(path)
-    while True:
-        if projects.get(p, {}).get("hasTrustDialogAccepted"):
-            return True
-        parent = os.path.dirname(p)
-        if parent == p:
-            return False
-        p = parent
+    candidates = [os.path.abspath(path)]
+    git_root = subprocess.run(
+        ["git", "-C", path, "rev-parse", "--show-toplevel"], capture_output=True, text=True
+    )
+    if git_root.returncode == 0 and git_root.stdout.strip():
+        candidates.append(git_root.stdout.strip())
+    return any(projects.get(p, {}).get("hasTrustDialogAccepted") for p in candidates)
 
 def _trust_session(name: str, path: str, timeout: int = 30):
     """Start Claude in a tmux session, accept the trust-folder prompt, then kill it.
@@ -609,6 +665,7 @@ def _trust_session(name: str, path: str, timeout: int = 30):
     subprocess.run(["tmux", "send-keys", "-t", tmux_target(name), "claude", "Enter"])
 
     trusted = False
+    no_prompt_polls = 0
     deadline = time.time() + timeout
     while time.time() < deadline:
         time.sleep(0.5)
@@ -617,6 +674,14 @@ def _trust_session(name: str, path: str, timeout: int = 30):
             break
         screen = capture()
         if "yes, i trust" not in screen.lower():
+            # Claude reached its input box without asking — nothing to accept.
+            if claude_alive(name) and "❯" in screen and "─" * 20 in screen:
+                no_prompt_polls += 1
+                if no_prompt_polls >= 4:
+                    trusted = True
+                    break
+            else:
+                no_prompt_polls = 0
             continue
         time.sleep(1.5)  # let the typeahead guard expire
         if not yes_focused(capture()):
@@ -866,6 +931,9 @@ async def watchdog_endpoint(body: WatchdogRequest, _=Depends(verify_key)):
         print(f"[watchdog] started fresh session (was_running={was_running}), waiting for ready...", flush=True)
         ready = await wait_for_claude_ready(WATCHDOG_SESSION, timeout=30)
         print(f"[watchdog] claude ready={ready}", flush=True)
+        if not claude_alive(WATCHDOG_SESSION):
+            print("[watchdog] Claude is not running in the watchdog session — skipping", flush=True)
+            return {"resolved": False, "reason": "watchdog Claude not running"}
 
         log_path = session_log(WATCHDOG_SESSION)
         open(log_path, "w").close()
@@ -891,7 +959,7 @@ async def watchdog_endpoint(body: WatchdogRequest, _=Depends(verify_key)):
         r2 = subprocess.run(["tmux", "paste-buffer", "-t", tmux_target(WATCHDOG_SESSION)], capture_output=True)
         print(f"[watchdog] paste: load={r1.returncode} paste={r2.returncode}", flush=True)
         await asyncio.sleep(0.2)
-        subprocess.run(["tmux", "send-keys", "-t", tmux_target(WATCHDOG_SESSION), "\r"], capture_output=True)
+        await submit_input(WATCHDOG_SESSION)
         print(f"[watchdog] prompt sent, polling log...", flush=True)
 
         # Poll for response (60s timeout)
@@ -967,11 +1035,16 @@ def needs_formatting(text: str) -> bool:
 async def format_response(raw: str) -> str:
     """Rewrite a reply for listening via the format session (see format/CLAUDE.md)."""
     async with format_lock:
+        if is_running(FORMAT_SESSION) and not claude_alive(FORMAT_SESSION):
+            subprocess.run(["tmux", "kill-session", "-t", tmux_target(FORMAT_SESSION)], capture_output=True)
         if not is_running(FORMAT_SESSION):
             await ensure_trusted(FORMAT_SESSION, FORMAT_DIR)
             subprocess.run(["tmux", "new-session", "-d", "-s", FORMAT_SESSION, "-c", FORMAT_DIR])
             subprocess.run(["tmux", "send-keys", "-t", tmux_target(FORMAT_SESSION), "claude", "Enter"])
             await wait_for_claude_ready(FORMAT_SESSION, timeout=30)
+        if not claude_alive(FORMAT_SESSION):
+            print("[format] Claude is not running in the format session — returning raw text", flush=True)
+            return raw
 
         log_path = session_log(FORMAT_SESSION)
         open(log_path, "w").close()
@@ -982,7 +1055,7 @@ async def format_response(raw: str) -> str:
         subprocess.run(["tmux", "load-buffer", tmp_input], capture_output=True)
         subprocess.run(["tmux", "paste-buffer", "-t", tmux_target(FORMAT_SESSION)], capture_output=True)
         await asyncio.sleep(0.2)
-        subprocess.run(["tmux", "send-keys", "-t", tmux_target(FORMAT_SESSION), "\r"], capture_output=True)
+        await submit_input(FORMAT_SESSION)
 
         deadline = time.time() + 60
         while time.time() < deadline:
