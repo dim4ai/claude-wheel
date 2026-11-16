@@ -274,6 +274,7 @@ export default function VoiceScreen() {
   const [terminalKeysH,  setTerminalKeysH]  = useState(50);
   const [belowTerminalH, setBelowTerminalH] = useState(120);
   const [settingsOpen, setSettingsOpen]     = useState(false);
+  const [commandsMenuOpen, setCommandsMenuOpen] = useState(false);
   const [language, setLanguage]             = useState('en');
   const [langOpen, setLangOpen]             = useState(false);
   const [secConnection, setSecConnection]   = useState(false);
@@ -1889,11 +1890,11 @@ export default function VoiceScreen() {
           }
         </TouchableOpacity>
         <View style={styles.settingsBtnRow}>
-          <TouchableOpacity style={styles.settingsBtn} onPress={() => toggleAnchorVad(!anchorVadMode)}>
-            <Text style={styles.settingsBtnText}>{anchorVadMode ? '🎤' : '👆'}</Text>
-          </TouchableOpacity>
           <TouchableOpacity style={styles.settingsBtn} onPress={() => { setTtsEnabled(v => { const next = !v; saveSettings({ ttsEnabled: next }); return next; }); }}>
             <Text style={styles.settingsBtnText}>{ttsEnabled ? '🔊' : '🔇'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.settingsBtn} onPress={() => setCommandsMenuOpen(true)}>
+            <Text style={styles.settingsBtnText}>⋯</Text>
           </TouchableOpacity>
           <View style={{ alignItems: 'center' }}>
             <TouchableOpacity style={styles.settingsBtn} onPress={() => setSettingsOpen(true)}>
@@ -1908,6 +1909,26 @@ export default function VoiceScreen() {
           </View>
         </View>
       </View>
+
+      {/* Quick commands dropdown */}
+      <Modal visible={commandsMenuOpen} transparent animationType="fade" onRequestClose={() => setCommandsMenuOpen(false)}>
+        <TouchableOpacity style={styles.commandsOverlay} activeOpacity={1} onPress={() => setCommandsMenuOpen(false)}>
+          <View style={[styles.commandsSheet, { top: headerH + 8 }]}>
+            <TouchableOpacity
+              style={styles.commandsRow}
+              onPress={() => { setCommandsMenuOpen(false); toggleAnchorVad(!anchorVadMode); }}
+            >
+              <Text style={styles.commandsRowText}>{anchorVadMode ? '🎤 Голос (стоп-слово)' : '👆 Ручной (тап)'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.commandsRow, { borderBottomWidth: 0 }]}
+              onPress={() => { setCommandsMenuOpen(false); sendTextContent('/compact'); }}
+            >
+              <Text style={styles.commandsRowText}>📦 Compact</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Settings Modal */}
       <Modal visible={settingsOpen} transparent animationType="slide" onRequestClose={() => setSettingsOpen(false)}>
@@ -2983,6 +3004,10 @@ const styles = StyleSheet.create({
   settingsBtnRow:     { flexDirection: 'row', alignItems: 'center', gap: 6 },
   settingsBtnText:    { fontSize: 24 },
   onlineDot:          { width: 10, height: 10, borderRadius: 5 },
+  commandsOverlay:    { flex: 1, backgroundColor: 'rgba(0,0,0,0.3)' },
+  commandsSheet:      { position: 'absolute', right: 16, backgroundColor: '#1a1a2e', borderRadius: 12, minWidth: 220, overflow: 'hidden' },
+  commandsRow:        { paddingVertical: 14, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#2a2a4e' },
+  commandsRowText:    { color: '#fff', fontSize: 16 },
   modalOverlay:       { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   modalSheet:         { backgroundColor: '#1a1a2e', borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 24, maxHeight: '85%' },
   modalTitle:         { color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 20 },
