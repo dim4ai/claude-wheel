@@ -848,21 +848,29 @@ export default function VoiceScreen() {
     } catch {}
   }
 
-  async function loadSessions() {
+  async function loadSessions(override?: { url: string; apiKey: string }) {
+    // Accepts an explicit server to load from so callers that just switched
+    // servers (applyServer only schedules a state update, it doesn't apply
+    // synchronously) don't fetch against the stale serverUrl/serverApiKey
+    // still closed over from this render - that produced a list that looked
+    // like it "didn't refresh" until the menu was closed and reopened,
+    // forcing a fresh render with the now-updated values.
+    const url = override?.url ?? serverUrl;
+    const headers = apiHeaders(override ? { 'x-api-key': override.apiKey } : undefined);
     try {
-      const r = await fetch(`${serverUrl}/dispatch?action=list`, {
-        method: 'POST', headers: apiHeaders(),
+      const r = await fetch(`${url}/dispatch?action=list`, {
+        method: 'POST', headers,
       });
       const data = await r.json();
       if (data.sessions) setSessionsList([...data.sessions].sort((a: any, b: any) => a.name.localeCompare(b.name)));
     } catch {}
     try {
-      const r = await fetch(`${serverUrl}/shell-sessions`, { headers: apiHeaders() });
+      const r = await fetch(`${url}/shell-sessions`, { headers });
       const data = await r.json();
       if (data.sessions) setShellSessionsList(data.sessions.map((name: string) => ({ name, running: true })));
     } catch {}
     try {
-      const r = await fetch(`${serverUrl}/ssh-connections`, { headers: apiHeaders() });
+      const r = await fetch(`${url}/ssh-connections`, { headers });
       const data = await r.json();
       if (data.connections) setSshConnections(data.connections);
     } catch {}
@@ -2341,7 +2349,7 @@ export default function VoiceScreen() {
                 onPress={() => {
                   applyServer(s);
                   setServerDropdownOpen(false);
-                  loadSessions();
+                  loadSessions({ url: s.url, apiKey: s.apiKey });
                 }}
               >
                 <Text style={styles.sessionName}>{s.id === currentServerId ? '🟢 ' : '   '}{s.name}</Text>
