@@ -1289,9 +1289,21 @@ export default function VoiceScreen() {
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const cancelledRef = useRef(false);
+  // Identifies one record→ask→speak (or type→ask→speak) turn. Each top-level
+  // send*()/speakMessage() call grabs the next value and only writes status
+  // in its `finally` if this is still the latest one — otherwise a turn that
+  // got cancelled (its TTS fetch kept running in the background regardless)
+  // would clobber the status/recording a later turn already set up.
+  const turnGenRef = useRef(0);
 
   function cancelProcessing() {
     cancelledRef.current = true;
+    // Bump the turn generation so a send*() call already past this point
+    // (e.g. its TTS fetch is still in flight — fetchTtsBase64 doesn't share
+    // abortControllerRef, so aborting that alone doesn't stop it) can tell,
+    // once it eventually resolves, that it's no longer current and must not
+    // overwrite status/recordingRef out from under whatever started since.
+    turnGenRef.current++;
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
@@ -1443,11 +1455,12 @@ export default function VoiceScreen() {
   async function speakMessage(text: string) {
     if (status === 'processing' || status === 'speaking') return;
     cancelledRef.current = false;
+    const myTurn = ++turnGenRef.current;
     setStatus('speaking');
     try {
       await speak(text);
     } finally {
-      setStatus(anchorVadActiveRef.current ? 'listening' : 'idle');
+      if (turnGenRef.current === myTurn) setStatus(anchorVadActiveRef.current ? 'listening' : 'idle');
     }
   }
 
@@ -1456,6 +1469,7 @@ export default function VoiceScreen() {
     if (!recordingRef.current) return;
     anchorManualSendRef.current = true;
     cancelledRef.current = false;
+    const myTurn = ++turnGenRef.current;
     setStatus('processing');
 
     try {
@@ -1502,7 +1516,7 @@ export default function VoiceScreen() {
       if (e?.name !== 'AbortError') showError('Error: ' + e);
     } finally {
       anchorManualSendRef.current = false;
-      setStatus(anchorVadActiveRef.current ? 'listening' : 'idle');
+      if (turnGenRef.current === myTurn) setStatus(anchorVadActiveRef.current ? 'listening' : 'idle');
     }
   }
 
@@ -1513,6 +1527,7 @@ export default function VoiceScreen() {
     setMessages(prev => [...prev, { role: 'user', text }]);
     setStatus('processing');
     cancelledRef.current = false;
+    const myTurn = ++turnGenRef.current;
     try {
       const abort = new AbortController();
       abortControllerRef.current = abort;
@@ -1535,7 +1550,7 @@ export default function VoiceScreen() {
       if (e?.name !== 'AbortError') showError('Error: ' + e);
     } finally {
       anchorManualSendRef.current = false;
-      setStatus(anchorVadActiveRef.current ? 'listening' : 'idle');
+      if (turnGenRef.current === myTurn) setStatus(anchorVadActiveRef.current ? 'listening' : 'idle');
     }
   }
 
@@ -1657,6 +1672,7 @@ export default function VoiceScreen() {
   async function sendAnchorAudio(uri: string) {
     anchorProcessingRef.current = true;
     cancelledRef.current = false;
+    const myTurn = ++turnGenRef.current;
     setStatus('processing');
     try {
       const formData = new FormData();
@@ -1693,7 +1709,7 @@ export default function VoiceScreen() {
       if (e?.name !== 'AbortError') showError('Error: ' + e);
     } finally {
       anchorProcessingRef.current = false;
-      setStatus(anchorVadActiveRef.current ? 'listening' : 'idle');
+      if (turnGenRef.current === myTurn) setStatus(anchorVadActiveRef.current ? 'listening' : 'idle');
     }
   }
 
