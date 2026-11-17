@@ -3002,7 +3002,7 @@ const styles = StyleSheet.create({
   session:            { color: '#4AE27A', fontSize: 18, marginTop: 2 },
   settingsBtn:        { padding: 8 },
   settingsBtnRow:     { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  settingsBtnText:    { fontSize: 24 },
+  settingsBtnText:    { fontSize: 24, color: '#fff' },
   onlineDot:          { width: 10, height: 10, borderRadius: 5 },
   commandsOverlay:    { flex: 1, backgroundColor: 'rgba(0,0,0,0.3)' },
   commandsSheet:      { position: 'absolute', right: 16, backgroundColor: '#1a1a2e', borderRadius: 12, minWidth: 220, overflow: 'hidden' },
