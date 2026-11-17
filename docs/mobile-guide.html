@@ -135,10 +135,13 @@
           <li><a href="#vad">VAD</a></li>
         </ul>
       </li>
+      <li><a href="#commands">Quick commands</a></li>
       <li><a href="#text-input">Text input</a></li>
       <li><a href="#terminal">Terminal</a></li>
       <li><a href="#sessions">Claude session management</a></li>
       <li><a href="#shell">Shell session management</a></li>
+      <li><a href="#ssh">SSH connections</a></li>
+      <li><a href="#multi-server">Multiple servers</a></li>
       <li><a href="#updates">Updates</a></li>
       <li><a href="#encryption">Data encryption</a></li>
       <li><a href="#build">Building APK</a></li>
@@ -162,8 +165,8 @@
       <p>The main screen consists of several zones:</p>
       <ul>
         <li><strong>Header</strong> — app name and current session</li>
-        <li><strong>🎤 / 👆</strong> — quick toggle for VAD: 🎤 voice mode (VAD), 👆 manual mode</li>
         <li><strong>🔊 / 🔇</strong> — quick toggle for response text-to-speech</li>
+        <li><strong>C</strong> — quick commands menu: toggle VAD mode and run one-tap commands like <a href="#compact">Compact</a></li>
         <li><strong>⚙️</strong> — settings button in the top-right corner; current time is displayed below it</li>
         <li><strong>🟢 / 🟠 / 🔴 indicator</strong> next to the gear — server status:<br>🟢 available, 🟠 server version outdated (update needed), 🔴 unavailable</li>
         <li><strong>Message feed</strong> — conversation history with Claude, persisted between app restarts</li>
@@ -230,13 +233,10 @@
       <p>Choose the voice for reading responses: ♀ female or ♂ male. Applies to all languages.</p>
 
       <h3>VAD</h3>
-      <p>Hands-free voice input mode. Also available as a quick toggle with the 🎤/👆 button in the main screen header. More details in the <a href="#vad">VAD</a> section.</p>
+      <p>Hands-free voice input mode. Also available as a quick toggle in the <strong>C</strong> commands menu in the main screen header. More details in the <a href="#vad">VAD</a> section.</p>
 
-      <h3>Wake phrase</h3>
-      <p>A word or phrase that starts recording. Choose something the STT reliably recognises in your voice.</p>
-
-      <h3>End phrase</h3>
-      <p>A word or phrase that ends recording and sends the message.</p>
+      <h3>Activation word</h3>
+      <p>Opens the enrollment screen: pick a word (default <em>"привет"</em>), record yourself saying it a few times, then start listening to test detection. See <a href="#vad">VAD</a> for the full flow.</p>
 
       <h3>Haptic feedback</h3>
       <p>Haptic feedback at the start and end of recording in VAD mode: Off / Light / Medium / Heavy.</p>
@@ -324,14 +324,23 @@
   <div class="note">During processing or playback the ↑ button in the input field turns into <strong>✕</strong> — tap it to cancel the request.</div>
 
   <h3 id="vad">VAD — hands-free voice input</h3>
-  <p>In Audio settings enable the <strong>VAD</strong> toggle. The app will start continuously listening via the built-in STT and react to marker phrases — no button presses needed, hands are completely free.</p>
+  <p>In Audio settings enable the <strong>VAD</strong> toggle (or use the <strong>C</strong> commands menu). The app listens in the background for your personal <strong>activation word</strong> using a local, on-device detector — no internet needed for the trigger itself — and reacts the moment it hears it, hands completely free.</p>
+
+  <h4 style="color:#8ab8f0; font-size:1rem; margin: 20px 0 8px;">One-time setup: enroll your activation word</h4>
+  <p>Open <strong>Audio → Activation word</strong>:</p>
+  <ol style="padding-left:20px; margin-bottom:14px;">
+    <li>Type the word (default <em>"привет"</em>) — it's stripped automatically from the start/end of whatever you say, since the detector hears it as part of the recording</li>
+    <li>Tap <strong>Record "…" (1.8s)</strong> a few times, saying the word clearly each time — the detector learns your voice from these samples</li>
+    <li>Tap <strong>Start listening</strong> to test detection live before relying on it</li>
+  </ol>
+  <div class="note">Detection is based on your own recorded samples, not a generic speech model — it won't reliably trigger on someone else's voice saying the same word, and a noisy recording when enrolling will make detection less reliable.</div>
 
   <h4 style="color:#8ab8f0; font-size:1rem; margin: 20px 0 8px;">How it works</h4>
   <ol style="padding-left:20px; margin-bottom:14px;">
     <li>The app is always listening in the background, status — <span class="badge" style="background:#2db85e;color:#fff">👂 Say "..."</span></li>
-    <li>Say the <strong>wake phrase</strong> — the phone will vibrate and a short beep will play. Status — <span class="badge" style="background:#E24A4a;color:#fff">Say "..." to send</span></li>
-    <li>Speak your message — everything after the wake phrase is recorded</li>
-    <li>Say the <strong>end phrase</strong> — the message between the markers is automatically sent to Claude. A completion beep plays</li>
+    <li>Say your activation word — the phone vibrates, a short beep plays, and recording starts. Status — <span class="badge" style="background:#E24A4a;color:#fff">Say "..." to send</span></li>
+    <li>Speak your message</li>
+    <li>Say the <strong>same</strong> activation word again — recording stops, a completion beep plays, and the message is sent to Claude (the trigger word itself is stripped from the transcript, wherever it ended up)</li>
   </ol>
 
   <div style="display:flex; gap:12px; justify-content:center; margin:24px 0;">
@@ -340,11 +349,18 @@
     <img src="img/1782076960328.jpg" style="width:28%; border-radius:12px; border:1px solid #2a2a4e;" alt="VAD response">
   </div>
 
-  <div class="tip">Wake and end phrases can be changed in <strong>Audio → Wake phrase</strong> and <strong>Audio → End phrase</strong>. Choose words that the STT reliably recognises in your voice and that don't appear in normal speech by accident. The wake and end phrases may be the same.</div>
-  <div class="note">VAD uses online speech recognition and requires a stable internet connection. In poor connection conditions VAD may work incorrectly — use manual mode in such situations.</div>
+  <div class="note">The activation word itself is detected fully on-device and works offline. Transcribing what you actually say between the two triggers still goes through the server's speech-to-text, so that part still needs a working connection.</div>
 
   <h4 style="color:#8ab8f0; font-size:1rem; margin: 20px 0 8px;">Use cases</h4>
   <p>VAD is convenient when your hands are busy or you can't look at the screen — while driving, on a walk, or working at a computer. Enable the mode, place the phone in front of you or put it in your pocket and use a headset.</p>
+
+  <!-- ── Quick commands ── -->
+  <h2 id="commands">Quick commands</h2>
+  <p>Tap the <strong>C</strong> button in the header (next to 🔊/🔇) to open a small dropdown:</p>
+  <ul>
+    <li><strong>🎤 Voice (activation word) / 👆 Manual</strong> — toggles VAD mode, same as the <strong>Audio → VAD</strong> switch</li>
+    <li id="compact"><strong>📦 Compact</strong> — sends <code>/compact</code> to the current session, same as typing it in the text field. Works even on a stopped session — it starts first, same as any other message</li>
+  </ul>
 
   <!-- ── Text input ── -->
   <h2 id="text-input">Text input</h2>
@@ -485,6 +501,28 @@
   <p>The key row scrolls horizontally — including when the keyboard is closed.</p>
   <p>The current cursor position in the terminal is shown with a blue character highlight.</p>
   <div class="note">If you scroll the terminal up, auto-scroll is disabled — new lines won't jump to the bottom. Press <strong>⏬︎</strong> to return to the end and re-enable auto-scroll.</div>
+
+  <!-- ── SSH connections ── -->
+  <h2 id="ssh">SSH connections</h2>
+  <p>Besides Shell sessions on the Claude Wheel server itself, you can save SSH connections to other machines and open a terminal to them the same way — through the same menu, as a swipeable tab next to your Claude and Shell sessions.</p>
+  <p>In the session menu, expand <strong>SSH connections</strong>:</p>
+  <ul>
+    <li>Tap a saved connection to connect — it opens as a terminal tab, same as a Shell session</li>
+    <li>Long-press a connection to edit it</li>
+    <li>🟢 next to a connection means it's currently connected</li>
+  </ul>
+  <p>To add one, expand <strong>New SSH connection</strong>, fill in name, host, port (default 22), user and password, optionally tap <strong>Test</strong> to verify before saving, then <strong>Save</strong>.</p>
+  <div class="note">The password is used once, to install the server's own SSH key onto the target host — it is never stored, on the server or the phone. From then on the connection is passwordless, authenticated with that key.</div>
+  <p>Disconnecting closes the remote session; deleting a saved connection removes it from the list (and disconnects it first, if connected).</p>
+
+  <!-- ── Multiple servers ── -->
+  <h2 id="multi-server">Multiple servers</h2>
+  <p>You can save several server profiles (e.g. different machines, or a home server and a VPS) and switch between them without reinstalling or re-entering connection settings each time.</p>
+  <ul>
+    <li>Manage profiles via <strong>Settings → Connection → Manage servers</strong> — add, edit or remove a server</li>
+    <li>Switch quickly from the session menu — tap the current server name at the top to expand the list of saved servers and pick another one</li>
+    <li>Switching servers resets the current session selection and reloads that server's Claude/Shell/SSH session lists</li>
+  </ul>
 
   <!-- ── Updates ── -->
   <h2 id="updates">Updates</h2>

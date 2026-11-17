@@ -113,11 +113,12 @@
   <p>The server runs on the machine where <a href="https://docs.anthropic.com/claude-code" target="_blank">Claude Code CLI</a> is installed — this can be your computer, a home server, or a VPS.</p>
 
   <!-- ── Requirements ── -->
-  <h2>Requirements</h2>
+  <h2 id="requirements">Requirements</h2>
   <ul>
     <li>Ubuntu 22+ (or another Linux)</li>
     <li>Python 3.10+</li>
     <li>tmux, ffmpeg</li>
+    <li><code>sshpass</code> — only needed for the SSH connections feature</li>
     <li>Claude Code CLI</li>
     <li>A <a href="https://console.groq.com" target="_blank">Groq</a> account for STT (speech recognition)</li>
   </ul>
@@ -126,7 +127,7 @@
   <h2>Installation</h2>
 
   <h3>System dependencies</h3>
-  <pre>sudo apt install ffmpeg tmux</pre>
+  <pre>sudo apt install ffmpeg tmux sshpass</pre>
 
   <h3>Clone the repository</h3>
   <pre>git clone https://github.com/dim4ai/claude-wheel.git
@@ -161,6 +162,18 @@ coach-discussion:/home/user/projects/coach/discussion</pre>
   <h3>stop hook — capturing Claude responses</h3>
   <p>For the server to receive Claude responses, you need to configure the stop hook in Claude Code:</p>
   <pre>./setup-hook.sh</pre>
+
+  <h3>Text-to-speech fallback</h3>
+  <p>Responses are read aloud with <a href="https://github.com/rany2/edge-tts" target="_blank">edge-tts</a> (Microsoft's free TTS) by default. Two optional layers of resilience:</p>
+  <ul>
+    <li><strong>TTS proxy</strong> — route edge-tts calls through a separate proxy instance instead of calling Microsoft directly from this server, useful if this server's own IP gets rate-limited or blocked. Set <code>TTS_PROXY_URL</code> / <code>TTS_PROXY_KEY</code> (and optionally <code>TTS_PROXY_CA</code> for a self-signed cert) in <code>.env</code>.</li>
+    <li><strong>Local Piper fallback</strong> — if edge-tts (direct or via proxy) returns no audio, the server instantly falls back to <a href="https://github.com/rhasspy/piper" target="_blank">Piper</a>, a small local/offline TTS engine, instead of the user hearing silence. One-time setup, downloads the voice models (~60MB each, not stored in git):</li>
+  </ul>
+  <pre>cd claude-wheel-server
+bash setup_local_tts.sh</pre>
+
+  <h3>SSH connections — SSH key</h3>
+  <p>If you plan to use the mobile app's saved SSH connections feature, make sure <code>sshpass</code> is installed (see <a href="#requirements">Requirements</a>). The server generates its own SSH keypair on first use (<code>~/.ssh/claude_wheel_id_ed25519</code>) and installs it on each target host the first time you save a connection to it — no passwords are ever stored.</p>
 
   <!-- ── Verification ── -->
   <h2>Verification</h2>
@@ -245,6 +258,18 @@ server {
     <tr><td><code>POST</code></td><td><code>/shell-input</code></td><td>Send text or a key to a shell session</td></tr>
     <tr><td><code>POST</code></td><td><code>/shell-create</code></td><td>Create a new shell session</td></tr>
     <tr><td><code>DELETE</code></td><td><code>/shell-session</code></td><td>Close a shell session</td></tr>
+  </table>
+
+  <h3 style="color:#c8d0e0; margin: 16px 0 8px;">SSH connections</h3>
+  <table>
+    <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+    <tr><td><code>GET</code></td><td><code>/ssh-connections</code></td><td>List saved SSH connections</td></tr>
+    <tr><td><code>POST</code></td><td><code>/ssh-connections</code></td><td>Save a new connection; installs the server's SSH key on the target using the given password (not stored)</td></tr>
+    <tr><td><code>PUT</code></td><td><code>/ssh-connections</code></td><td>Edit a saved connection; re-installs the key if a password is given</td></tr>
+    <tr><td><code>DELETE</code></td><td><code>/ssh-connections</code></td><td>Remove a saved connection and its installed key from the target (best-effort)</td></tr>
+    <tr><td><code>POST</code></td><td><code>/ssh-connect</code></td><td>Open a terminal session to a saved connection</td></tr>
+    <tr><td><code>POST</code></td><td><code>/ssh-disconnect</code></td><td>Close the terminal session for a saved connection</td></tr>
+    <tr><td><code>POST</code></td><td><code>/ssh-test</code></td><td>Test connectivity, either to a saved connection or raw host/port/user/password</td></tr>
   </table>
 
   <h3 style="color:#c8d0e0; margin: 16px 0 8px;">Other</h3>

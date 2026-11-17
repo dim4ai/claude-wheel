@@ -156,7 +156,7 @@
   <div class="how-it-works">
     <h2>How it works</h2>
     <div class="pipeline">
-      <div class="pipeline-step">🎤 Voice</div>
+      <div class="pipeline-step">🎤 Voice (local wake-word)</div>
       <div class="pipeline-arrow">→</div>
       <div class="pipeline-step">STT (Groq Whisper)</div>
       <div class="pipeline-arrow">→</div>
@@ -166,7 +166,7 @@
       <div class="pipeline-arrow">→</div>
       <div class="pipeline-step">FastAPI server</div>
       <div class="pipeline-arrow">→</div>
-      <div class="pipeline-step">TTS → 🔊</div>
+      <div class="pipeline-step">TTS (edge-tts + local fallback) → 🔊</div>
     </div>
   </div>
 
