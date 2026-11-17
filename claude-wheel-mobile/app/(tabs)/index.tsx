@@ -28,7 +28,7 @@ import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const MIN_SERVER_VERSION = '1.1.2';
 // Bigger chunks = fewer TTS requests per response. Bumped up from 100/50 as an
 // experiment to see if fewer, larger requests to the proxy trip Microsoft's
