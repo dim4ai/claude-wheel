@@ -1894,7 +1894,7 @@ export default function VoiceScreen() {
             <Text style={styles.settingsBtnText}>{ttsEnabled ? '🔊' : '🔇'}</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.settingsBtn} onPress={() => setCommandsMenuOpen(true)}>
-            <Text style={styles.settingsBtnText}>▾</Text>
+            <Text style={[styles.settingsBtnText, { color: '#4A90E2', fontWeight: 'bold' }]}>C</Text>
           </TouchableOpacity>
           <View style={{ alignItems: 'center' }}>
             <TouchableOpacity style={styles.settingsBtn} onPress={() => setSettingsOpen(true)}>
