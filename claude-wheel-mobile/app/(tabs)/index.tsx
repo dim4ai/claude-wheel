@@ -1509,9 +1509,13 @@ export default function VoiceScreen() {
       const askRes = await fetch(`${serverUrl}/ask?session=${encodeURIComponent(currentSession)}&lock=${sessionLocking}`, {
         method: 'POST',
         headers: apiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, source: 'voice' }),
         signal: abort.signal,
       });
+      if (!askRes.ok) {
+        const err = await askRes.json().catch(() => ({}));
+        throw new Error(err.detail || `Server error: ${askRes.status}`);
+      }
       const { text: claudeText = 'No response', speech_text } = await askRes.json();
       appendMessage({ role: 'claude', text: claudeText, speechText: speech_text });
       refreshSession();
@@ -1548,6 +1552,10 @@ export default function VoiceScreen() {
         body: JSON.stringify({ text }),
         signal: abort.signal,
       });
+      if (!askRes.ok) {
+        const err = await askRes.json().catch(() => ({}));
+        throw new Error(err.detail || `Server error: ${askRes.status}`);
+      }
       const { text: claudeText = 'No response', speech_text } = await askRes.json();
       appendMessage({ role: 'claude', text: claudeText, speechText: speech_text });
       refreshSession();
@@ -1704,9 +1712,13 @@ export default function VoiceScreen() {
       const askRes = await fetch(`${serverUrl}/ask?session=${encodeURIComponent(currentSession)}&lock=${sessionLocking}`, {
         method: 'POST',
         headers: apiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, source: 'voice' }),
         signal: abort.signal,
       });
+      if (!askRes.ok) {
+        const err = await askRes.json().catch(() => ({}));
+        throw new Error(err.detail || `Server error: ${askRes.status}`);
+      }
       const { text: claudeText = 'No response', speech_text } = await askRes.json();
       appendMessage({ role: 'claude', text: claudeText, speechText: speech_text });
       refreshSession();
@@ -1894,7 +1906,7 @@ export default function VoiceScreen() {
             <Text style={styles.settingsBtnText}>{ttsEnabled ? '🔊' : '🔇'}</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.settingsBtn} onPress={() => setCommandsMenuOpen(true)}>
-            <Text style={[styles.settingsBtnText, { color: '#4A90E2', fontWeight: 'bold' }]}>C</Text>
+            <Text style={[styles.settingsBtnText, { color: '#87AEBF', fontWeight: 'bold' }]}>C</Text>
           </TouchableOpacity>
           <View style={{ alignItems: 'center' }}>
             <TouchableOpacity style={styles.settingsBtn} onPress={() => setSettingsOpen(true)}>

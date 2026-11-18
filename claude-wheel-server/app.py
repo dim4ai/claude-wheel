@@ -75,6 +75,21 @@ IDLE_TIMEOUT   = int(os.environ.get("IDLE_TIMEOUT", "1800"))  # 30 min default
 SESSIONS_CONF  = os.path.join(os.path.dirname(__file__), os.environ.get("SESSIONS_LIST", "sessions-list.txt"))
 SSH_CREDS_FILE = os.path.join(os.path.dirname(__file__), "ssh-connections.json")
 
+# Known selectable menus we can resolve deterministically, without waking the
+# (currently unused) LLM watchdog. Each entry: (match-text lowercased, keys to
+# send). Add one here per *specific, already-seen* screen — never a fuzzy
+# "looks like a menu" guess; an unmatched menu is just left for the user.
+KNOWN_MENUS = [
+    ("claude has written up a plan and is ready to execute", ["Enter"]),
+]
+
+def _resolve_known_menu(screen: str) -> list[str] | None:
+    low = screen.lower()
+    for marker, keys in KNOWN_MENUS:
+        if marker in low:
+            return keys
+    return None
+
 def _get_ssh_creds_key() -> bytes:
     """Fernet key for encrypting saved SSH passwords at rest. Generated once and
     persisted to .env so it survives restarts; losing it just means re-entering
@@ -545,6 +560,7 @@ async def text_to_speech(
 
 class AskRequest(BaseModel):
     text: str
+    source: str | None = None  # "voice" when text came from STT, for the garbled-transcription hint below
 
 @app.post("/ask")
 async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Query(True), _=Depends(verify_key)):
@@ -585,9 +601,20 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
             time.sleep(0.2)
 
         # Inject text into tmux via temp file (reliable for long text)
+        injected_text = body.text
+        if body.source == "voice":
+            # Speech-to-text occasionally mangles words into something that still
+            # parses as a sentence, just not the right one. Flag it so a weirdly
+            # specific instruction gets a clarifying question instead of a
+            # confident wrong guess.
+            injected_text = (
+                "[voice input, transcribed by STT — if a word or instruction "
+                "looks oddly specific or out of place, it may be a misrecognition; "
+                "ask rather than guess]\n" + injected_text
+            )
         tmp_input = f"/tmp/claude_tmux_input_{session}.txt"
         with open(tmp_input, "w") as f:
-            f.write(body.text)
+            f.write(injected_text)
         subprocess.run(["tmux", "load-buffer", tmp_input], capture_output=True)
         result = subprocess.run(["tmux", "paste-buffer", "-t", tmux_target(session)], capture_output=True, text=True)
         if result.returncode != 0:
@@ -595,7 +622,17 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
         await asyncio.sleep(0.2)
         await submit_input(session)
 
-        # Poll for terminator
+        # Poll for terminator. Some turns (slash commands like /compact) never
+        # produce a new assistant text message, so the Stop hook that writes
+        # ENDENDENDENDEND never fires — without a fallback, this would hang
+        # for the full ASK_TIMEOUT every time. Track the pane's busy/idle
+        # state as a second signal: once we've seen it busy ("esc to
+        # interrupt") and then watch it go idle and stable, treat that as
+        # completion even with no marker.
+        busy_seen = False
+        idle_stable_count = 0
+        prev_screen = None
+        last_capture = 0.0
         deadline = time.time() + ASK_TIMEOUT
         while time.time() < deadline:
             await asyncio.sleep(0.5)
@@ -603,7 +640,7 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
                 with open(log_path, "r") as f:
                     content = f.read()
             except FileNotFoundError:
-                continue
+                content = ""
             if "ENDENDENDENDEND" in content:
                 response = content.split("ENDENDENDENDEND")[0].strip()
                 # Keep the real reply in "text" (for display/copy) even when it
@@ -614,6 +651,46 @@ async def ask_claude(body: AskRequest, session: str = Query(...), lock: bool = Q
                 if needs_formatting(response):
                     result["speech_text"] = strip_markdown(await format_response(response))
                 return result
+
+            now = time.time()
+            if now - last_capture < 2:
+                continue
+            last_capture = now
+
+            screen = subprocess.run(
+                ["tmux", "capture-pane", "-t", tmux_target(session), "-p"],
+                capture_output=True, text=True
+            ).stdout
+            if screen == prev_screen:
+                # A selectable menu (permission prompt, trust dialog, ...) looks
+                # idle too, but it's waiting on a real decision, not finished —
+                # firing the no-text fallback here would hand the phone a fake
+                # "done" and hide the pending prompt instead of letting it be
+                # resolved. A handful of these are known, safe and always
+                # resolved the same way (KNOWN_MENUS) — dismiss those directly;
+                # anything else is left pending, same as before.
+                awaiting_choice = any(re.match(r"\s*❯\s*\d+\.", line) for line in screen.splitlines())
+                if awaiting_choice:
+                    keys = _resolve_known_menu(screen)
+                    if keys:
+                        print(f"[ask] {session}: known menu matched, sending {keys}", flush=True)
+                        subprocess.run(["tmux", "send-keys", "-t", tmux_target(session)] + keys, capture_output=True)
+                        idle_stable_count = 0
+                        continue
+                if busy_seen and not awaiting_choice:
+                    idle_stable_count += 1
+                    if idle_stable_count >= 3:
+                        print(f"[ask] {session}: pane went idle with no ENDENDENDENDEND "
+                              f"(likely a command with no assistant-text reply, e.g. /compact)", flush=True)
+                        fallback = "✓ Готово (без текстового ответа — вероятно, команда вроде /compact)"
+                        result = {"text": fallback, "speech_text": strip_markdown(await format_response(fallback))}
+                        return result
+            else:
+                # Screen changed since the last control capture — re-check busy state.
+                idle_stable_count = 0
+                if "esc to interrupt" in screen:
+                    busy_seen = True
+                prev_screen = screen
 
     raise HTTPException(status_code=504, detail="Claude response timeout")
 
